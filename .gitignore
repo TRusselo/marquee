@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.env
+data/
+output/now-playing.json
+output/poster.jpg
+output/backdrop.jpg
+output/logo.png
+output/settings.json
+output/now-playing.png

@@ -1,0 +1,9 @@
+.git
+.gitignore
+__pycache__
+*.py[cod]
+data
+output/*.jpg
+output/*.png
+output/now-playing.json
+output/settings.json

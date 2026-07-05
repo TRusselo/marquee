@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Marquee</Name>
+  <Repository>jamisonfitz/plex-marquee:latest</Repository>
+  <Registry>https://hub.docker.com/r/jamisonfitz/plex-marquee</Registry>
+  <Network>host</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Jamisonfitz/plex-marquee/issues</Support>
+  <Project>https://github.com/Jamisonfitz/plex-marquee</Project>
+  <Overview>Plex now-playing marquee for Google Nest Hubs with configurable colors and snap-grid layouts.</Overview>
+  <Category>MediaApp:Other</Category>
+  <WebUI>http://[IP]:[PORT:8084]/</WebUI>
+  <ExtraParams>--restart unless-stopped</ExtraParams>
+  <Config Name="Settings" Target="/config" Default="/mnt/user/appdata/marquee" Mode="rw" Description="Persistent settings." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Nest Hub IP" Target="HUB_IP" Default="" Mode="" Description="Static LAN IP of the Google Nest Hub." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Card URL" Target="PAGE_URL" Default="http://[SERVER-IP]:8084/image" Mode="" Description="LAN URL reachable by the Hub." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Plex URL" Target="PLEX_HOST" Default="http://[PLEX-IP]:32400" Mode="" Description="LAN URL of Plex Media Server." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Plex Token" Target="PLEX_TOKEN" Default="" Mode="" Description="Plex X-Plex-Token; treat it like a password." Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="TMDb API Key" Target="TMDB_API_KEY" Default="" Mode="" Description="Optional key for credits-scene badges." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Poll Interval" Target="POLL_SECONDS" Default="5" Mode="" Description="Seconds between Plex checks." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Web Port" Target="SERVE_PORT" Default="8084" Mode="" Description="Web UI port." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>

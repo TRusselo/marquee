@@ -1,0 +1,104 @@
+# Marquee
+
+[![Build](https://github.com/Jamisonfitz/marquee/actions/workflows/container.yml/badge.svg)](https://github.com/Jamisonfitz/marquee/actions/workflows/container.yml)
+[![Top language](https://img.shields.io/github/languages/top/Jamisonfitz/marquee)](https://github.com/Jamisonfitz/marquee)
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Docker Pulls](https://img.shields.io/docker/pulls/jamisonfitz/marquee?logo=docker)](https://hub.docker.com/r/jamisonfitz/marquee)
+[![Docker Image Version](https://img.shields.io/docker/v/jamisonfitz/marquee?sort=semver&logo=docker)](https://hub.docker.com/r/jamisonfitz/marquee/tags)
+[![License](https://img.shields.io/github/license/Jamisonfitz/marquee)](LICENSE)
+
+Marquee turns a Google Nest Hub into a clean Plex now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the Hub to ambient mode when playback stops.
+
+## Features
+
+- Live Plex now-playing card with poster or backdrop layouts.
+- Curated theme presets with polished default box positions.
+- A snap-grid editor for moving and resizing each card element.
+- Persisted settings, health checks, and a Docker-first deployment path.
+- Google Nest Hub casting with clean idle handoff back to ambient mode.
+
+## What You Need
+
+- Docker
+- Plex Media Server on the same LAN
+- A Google Nest Hub on the same LAN
+- A Plex `X-Plex-Token`
+
+Marquee is designed for a trusted LAN. It has no login and should not be port-forwarded.
+
+## Quick Start
+
+Edit the example IP addresses and token in `compose.yaml`, then run:
+
+```sh
+docker compose up -d --build
+docker compose logs -f marquee
+```
+
+Open `http://SERVER-IP:8084/`. The card served to the Hub is `http://SERVER-IP:8084/image`.
+
+If you prefer plain Docker:
+
+```sh
+docker build -t marquee:local .
+docker run -d --name marquee --restart unless-stopped --network host \
+  -e HUB_IP=192.168.1.50 \
+  -e PAGE_URL=http://192.168.1.10:8084/image \
+  -e PLEX_HOST=http://192.168.1.10:32400 \
+  -e PLEX_TOKEN=replace-me \
+  -v marquee-config:/config \
+  marquee:local
+```
+
+Settings persist under `./data` in Compose mode or `/config` in the container.
+
+## Configuration
+
+Required environment variables:
+
+- `HUB_IP`
+- `PAGE_URL`
+- `PLEX_HOST`
+- `PLEX_TOKEN`
+
+Optional settings:
+
+- `TMDB_API_KEY`
+- `POLL_SECONDS` default `5`
+- `SERVE_PORT` default `8084`
+- `REPO_DIR` default `/app`
+- `DATA_DIR` default `/config`
+
+Health status is available at `/healthz` and includes the version.
+
+## Plex Token
+
+1. Sign in to Plex Web and open an item on your server.
+2. Select **More (`…`) → Get Info → View XML**.
+3. Copy the value after `X-Plex-Token=` from the browser address bar.
+4. Test it at `http://PLEX-IP:32400/?X-Plex-Token=YOUR_TOKEN`.
+
+See Plex's [token instructions](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
+Never put a real token in Compose files, screenshots, issues, or commits.
+
+For credits-scene badges, create a TMDb account, open **Account Settings → API**, request a key, and set `TMDB_API_KEY`.
+
+## Development
+
+```sh
+docker build -t marquee:test .
+docker run --rm marquee:test python cast/cast.py --selftest
+docker logs -f marquee
+```
+
+The service uses [catt](https://github.com/skorokithakis/catt) to launch DashCast on the Hub. Ratings come from Plex metadata; optional credits-scene keywords come from TMDb.
+
+### Cast behavior
+
+Marquee checks that DashCast is active, casts the `/image` URL when playback starts, and releases the Hub when playback stops. Container tests cannot prove physical Hub behavior, so before publishing a release:
+
+1. Open `PAGE_URL` from another LAN device.
+2. Start a Plex movie or episode and confirm the Hub loads the card.
+3. Pause and resume playback and confirm the progress state updates within one poll interval.
+4. Stop playback and confirm the Hub returns to ambient mode.
+5. Review `docker logs marquee`; there should be no `catt ... failed` message.
