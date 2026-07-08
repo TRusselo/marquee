@@ -145,6 +145,44 @@ def dashcast_active():
     return "DashCast" in catt("info").stdout
 
 
+TARGET = os.environ.get("CAST_TARGET", "nest").lower()
+if TARGET not in ("nest", "esp32"):
+    TARGET = "nest"
+
+
+def nest_available():
+    return bool(hub_ip())
+
+
+def nest_active():
+    return dashcast_active()
+
+
+def nest_show(page_url):
+    sep = "&" if "?" in page_url else "?"
+    catt("cast_site", f"{page_url}{sep}cb={int(time.time())}")
+
+
+def nest_hide():
+    catt("stop")
+
+
+def device_available():
+    return esp32_available() if TARGET == "esp32" else nest_available()
+
+
+def device_active():
+    return esp32_active() if TARGET == "esp32" else nest_active()
+
+
+def device_show(page_url):
+    return esp32_show(page_url) if TARGET == "esp32" else nest_show(page_url)
+
+
+def device_hide():
+    return esp32_hide() if TARGET == "esp32" else nest_hide()
+
+
 def tmdb_stinger(tmdb_id):
     """['during'|'after', ...] from TMDb keywords (aftercreditsstinger etc.)."""
     url = f"https://api.themoviedb.org/3/movie/{tmdb_id}/keywords?api_key={TMDB_KEY}"
@@ -583,19 +621,19 @@ def loop():
             atomic_write(JSON_PATH, json.dumps(info or {"playing": False}))
             playing = bool(info)
             if playing != last_playing or tick % 6 == 0:
-                if not hub_ip():
+                if not device_available():
                     if playing and playing != last_playing:
-                        print("no cast device configured — pick one on the "
-                              "settings page or set HUB_IP", flush=True)
+                        print("no display configured — pick a Nest device on the "
+                              "settings page, or set HUB_IP / ESP32_HOST", flush=True)
                 else:
-                    dash = dashcast_active()
-                    if playing and not dash:
-                        print(f"plex playing ({info['title']}) -> casting", flush=True)
-                        sep = "&" if "?" in PAGE_URL else "?"
-                        catt("cast_site", f"{PAGE_URL}{sep}cb={int(time.time())}")
-                    elif not playing and dash:
-                        print("plex idle -> releasing hub", flush=True)
-                        catt("stop")
+                    shown = device_active()
+                    if playing and not shown:
+                        print(f"{BACKEND} playing ({info['title']}) -> showing",
+                              flush=True)
+                        device_show(PAGE_URL)
+                    elif not playing and shown:
+                        print(f"{BACKEND} idle -> releasing display", flush=True)
+                        device_hide()
             last_playing = playing
             tick += 1
         except Exception as e:
@@ -715,6 +753,10 @@ def selftest():
     assert emby_select_session(sessions, set()) is sessions[2]
     assert emby_select_session(sessions, {"alice"}) is sessions[2]
     assert emby_select_session(sessions, {"bob"}) is None
+    assert TARGET in ("nest", "esp32")
+    # Nest device functions exist and are the chosen dispatch
+    assert device_available is not None and device_show is not None
+    assert device_hide is not None and device_active is not None
     print("selftest ok")
 
 
