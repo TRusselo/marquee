@@ -167,6 +167,58 @@ def nest_hide():
     catt("stop")
 
 
+ESP32_HOST = os.environ.get("ESP32_HOST", "")
+ESP32_PORT = int(os.environ.get("ESP32_PORT", "80"))
+
+
+def esp32_endpoint(host, port, path):
+    return f"http://{host}:{port}/{path}"
+
+
+def esp32_json_url(page_url):
+    """Derive the now-playing.json URL from PAGE_URL's origin."""
+    p = urllib.parse.urlsplit(page_url)
+    return f"{p.scheme}://{p.netloc}/now-playing.json"
+
+
+def esp32_post(path, payload=None):
+    data = json.dumps(payload or {}).encode()
+    req = urllib.request.Request(
+        esp32_endpoint(ESP32_HOST, ESP32_PORT, path), data=data,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def esp32_available():
+    if not ESP32_HOST:
+        return False
+    try:
+        with urllib.request.urlopen(
+                esp32_endpoint(ESP32_HOST, ESP32_PORT, "status"), timeout=5) as r:
+            json.load(r)
+        return True
+    except Exception:
+        return False
+
+
+def esp32_active():
+    try:
+        with urllib.request.urlopen(
+                esp32_endpoint(ESP32_HOST, ESP32_PORT, "status"), timeout=5) as r:
+            return bool(json.load(r).get("displaying"))
+    except Exception:
+        return False
+
+
+def esp32_show(page_url):
+    esp32_post("display", {"json_url": esp32_json_url(page_url)})
+
+
+def esp32_hide():
+    esp32_post("stop")
+
+
 def device_available():
     return esp32_available() if TARGET == "esp32" else nest_available()
 
@@ -757,6 +809,11 @@ def selftest():
     # Nest device functions exist and are the chosen dispatch
     assert device_available is not None and device_show is not None
     assert device_hide is not None and device_active is not None
+    assert esp32_endpoint("10.0.0.5", 80, "display") == "http://10.0.0.5:80/display"
+    assert esp32_endpoint("10.0.0.5", 8080, "stop") == "http://10.0.0.5:8080/stop"
+    # The card's JSON url derived from PAGE_URL's origin
+    assert esp32_json_url("http://192.168.1.10:8084/image") == \
+        "http://192.168.1.10:8084/now-playing.json"
     print("selftest ok")
 
 
