@@ -12,5 +12,13 @@ services:
       PLEX_TOKEN: "replace-me"
       PLEX_USERS: ""   # comma-separated usernames; empty = everyone
       TMDB_API_KEY: ""
+      # --- Media backend: choose one ---
+      MEDIA_BACKEND: "plex"                        # plex (default) | emby
+      EMBY_HOST: ""                                # e.g. http://localhost:8096 (when emby)
+      EMBY_API_KEY: ""                             # Emby API key (when emby)
+      # --- Display target: choose one ---
+      CAST_TARGET: "nest"                          # nest (default) | esp32
+      ESP32_HOST: ""                               # ESP32 IP (when esp32)
+      ESP32_PORT: "80"                             # ESP32 HTTP port
     volumes:
       - ./data:/config
