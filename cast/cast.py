@@ -153,6 +153,63 @@ def transcode_to(path, plex_path, w, h):
         atomic_write(os.path.join(OUTPUT, path), r.read(), "wb")
 
 
+EMBY = os.environ.get("EMBY_HOST", "").rstrip("/")
+EMBY_KEY = os.environ.get("EMBY_API_KEY", "")
+
+
+def emby_url(path):
+    base = EMBY + path
+    return f"{base}{'&' if '?' in base else '?'}api_key={EMBY_KEY}"
+
+
+def emby_fetch_json(path):
+    with urllib.request.urlopen(emby_url(path), timeout=10) as r:
+        return json.load(r)
+
+
+def emby_image_url(host, key, item_id, kind, w=600, h=900):
+    return (f"{host.rstrip('/')}/Items/{item_id}/Images/{kind}"
+            f"?maxWidth={w}&maxHeight={h}&api_key={key}")
+
+
+def emby_save_image(item_id, kind, out_name, w, h):
+    url = emby_image_url(EMBY, EMBY_KEY, item_id, kind, w, h)
+    with urllib.request.urlopen(url, timeout=15) as r:
+        atomic_write(os.path.join(OUTPUT, out_name), r.read(), "wb")
+
+
+def emby_download_art(item):
+    """Save poster/backdrop/logo for an Emby item into output/."""
+    out = {"poster": False, "backdrop": False, "logo": False}
+    item_id = item.get("Id")
+    tags = item.get("ImageTags") or {}
+    if item.get("Type") == "Episode" and item.get("SeriesId"):
+        poster_id = item["SeriesId"]
+    else:
+        poster_id = item_id
+    try:
+        if poster_id:
+            emby_save_image(poster_id, "Primary", "poster.jpg", 600, 900)
+            out["poster"] = True
+    except Exception:
+        pass
+    backdrop_id = item.get("ParentBackdropItemId") or item.get("SeriesId") or item_id
+    try:
+        if backdrop_id:
+            emby_save_image(backdrop_id, "Backdrop/0", "backdrop.jpg", 1280, 800)
+            out["backdrop"] = True
+    except Exception:
+        pass
+    logo_id = item.get("ParentLogoItemId") or item.get("SeriesId") or item_id
+    try:
+        if "Logo" in tags or logo_id:
+            emby_save_image(logo_id, "Logo", "logo.png", 800, 310)
+            out["logo"] = True
+    except Exception:
+        pass
+    return out
+
+
 def download_art(item, rating_key):
     """Save poster.jpg, backdrop.jpg, logo.png into output/."""
     out = {"poster": False, "backdrop": False, "logo": False}
@@ -593,6 +650,13 @@ def selftest():
     einfo = parse_emby_session(eep, extras=lambda item: dict(SAMPLE_EMBY_EXTRAS, stinger=[]))
     assert einfo["title"] == "Severance"
     assert einfo["subtitle"] == "S2 · E5 · The Rundown"
+    assert emby_image_url("http://emby:8096", "KEY", "79372", "Primary") == (
+        "http://emby:8096/Items/79372/Images/Primary"
+        "?maxWidth=600&maxHeight=900&api_key=KEY")
+    assert emby_image_url("http://emby:8096/", "KEY", "79372", "Backdrop/0",
+                          600, 400) == (
+        "http://emby:8096/Items/79372/Images/Backdrop/0"
+        "?maxWidth=600&maxHeight=400&api_key=KEY")
     print("selftest ok")
 
 
