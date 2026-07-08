@@ -40,7 +40,9 @@ TMDB_KEY = os.environ.get("TMDB_API_KEY", "")
 SERVE_PORT = int(os.environ.get("SERVE_PORT", "8084"))
 # Comma-separated Plex usernames that may trigger the marquee; empty = everyone.
 USERS = {u.strip().lower()
-         for u in os.environ.get("PLEX_USERS", "").split(",") if u.strip()}
+         for u in os.environ.get("MEDIA_USERS",
+                                 os.environ.get("PLEX_USERS", "")).split(",")
+         if u.strip()}
 
 BACKEND = os.environ.get("MEDIA_BACKEND", "plex").lower()
 if BACKEND not in ("plex", "emby"):
