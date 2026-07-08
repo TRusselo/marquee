@@ -365,7 +365,7 @@ def pretty_resolution(res):
 
 
 def emby_ticks_to_ms(ticks):
-    return int(ticks) // 10000 if ticks else None
+    return int(ticks) // 10000 if ticks is not None else None
 
 
 def emby_resolution(height):
