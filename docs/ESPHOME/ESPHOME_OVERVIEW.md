@@ -26,11 +26,23 @@ display:
     cs_pin: GPIO15
     dc_pin: GPIO2
 http_request:
-text_sensor:
-  - platform: http_request
-    resource: http://marquee-server:8084/api/now-playing.json
-    scan_interval: 5s
+  id: http_client
+interval:
+  - interval: 5s
+    then:
+      - http_request.get:
+          url: "http://marquee-server:8084/api/now-playing.json"
+          capture_response: true
+          on_response:
+            then:
+              - lambda: |-
+                  // Parse the response into globals here (see ESPHOME_CONFIG.md)
 ```
+
+Note: this fetches and parses into `globals:`, not a `text_sensor:` — ESPHome
+text values cap out around 255 bytes, which truncates the card JSON. See
+"Why not a text_sensor?" in [ESPHOME_CONFIG.md](ESPHOME_CONFIG.md) for the full
+pattern.
 
 Flash it once via USB (or web browser), then all updates are **OTA (wireless)**.
 
