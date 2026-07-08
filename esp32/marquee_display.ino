@@ -47,7 +47,8 @@ const unsigned long IDLE_TIMEOUT = 300000; // 5 minutes of inactivity
 int current_brightness_pct = 78;   // 0-100 (the user's chosen level)
 const int IDLE_BRIGHTNESS_PCT = 20; // dim level while idle (does not overwrite the above)
 bool is_displaying = false;
-bool is_idle = false;
+bool is_idle = false;     // stopped: dimmed AND showing the idle screen
+bool is_dimmed = false;   // playing but idle-timed-out: dimmed, still showing the card
 
 // Forward declarations
 void setup_wifi();
@@ -61,6 +62,7 @@ void handle_stop_request(AsyncWebServerRequest *request, JsonVariant &json);
 void handle_brightness_request(AsyncWebServerRequest *request, JsonVariant &json);
 void set_brightness(int level);
 void go_idle();
+void go_dim();
 void wake_up();
 
 void setup() {
@@ -81,9 +83,14 @@ void setup() {
 void loop() {
   unsigned long now = millis();
   
-  // Check for inactivity and go idle
-  if (!is_idle && (now - last_activity_time > IDLE_TIMEOUT)) {
-    go_idle();
+  // After inactivity: if a title is still playing, dim the card (cinema mode)
+  // so it isn't a distraction; only drop to the idle screen once playback stops.
+  if (!is_idle && !is_dimmed && (now - last_activity_time > IDLE_TIMEOUT)) {
+    if (is_displaying) {
+      go_dim();
+    } else {
+      go_idle();
+    }
   }
   
   // Fetch and render card at interval
@@ -132,7 +139,7 @@ void setup_wifi() {
 void setup_web_server() {
   // Status endpoint
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-    DynamicJsonDocument doc(256);
+    JsonDocument doc;
     doc["status"] = "ok";
     doc["uptime_seconds"] = millis() / 1000;
     doc["displaying"] = is_displaying;
@@ -145,7 +152,7 @@ void setup_web_server() {
   
   // Info endpoint
   server.on("/info", HTTP_GET, [](AsyncWebServerRequest *request) {
-    DynamicJsonDocument doc(256);
+    JsonDocument doc;
     doc["name"] = "Marquee Display";
     doc["firmware_version"] = "1.0.0";
     doc["model"] = "ESP32 ILI9341";
@@ -193,7 +200,7 @@ void handle_display_request(AsyncWebServerRequest *request, JsonVariant &json) {
   render_loading_screen();
   fetch_and_render_card();
   
-  DynamicJsonDocument doc(128);
+  JsonDocument doc;
   doc["ok"] = true;
   String response;
   serializeJson(doc, response);
@@ -205,7 +212,7 @@ void handle_stop_request(AsyncWebServerRequest *request, JsonVariant &json) {
   current_card_url = "";
   go_idle();
   
-  DynamicJsonDocument doc(128);
+  JsonDocument doc;
   doc["ok"] = true;
   String response;
   serializeJson(doc, response);
@@ -221,7 +228,7 @@ void handle_brightness_request(AsyncWebServerRequest *request, JsonVariant &json
   int level = json["level"].as<int>();
   set_brightness(constrain(level, 0, 100));
   
-  DynamicJsonDocument doc(128);
+  JsonDocument doc;
   doc["ok"] = true;
   doc["brightness"] = current_brightness_pct;
   String response;
@@ -327,7 +334,7 @@ void fetch_and_render_card() {
   }
   
   // Show progress bar if available
-  if (doc.containsKey("progress")) {
+  if (doc["progress"].is<JsonObject>()) {
     int offsetMs = doc["progress"]["offsetMs"];
     int durationMs = doc["progress"]["durationMs"];
     if (durationMs > 0) {
@@ -341,6 +348,7 @@ void fetch_and_render_card() {
 
 void go_idle() {
   is_idle = true;
+  is_dimmed = false;
   // Dim the backlight directly, WITHOUT clobbering current_brightness_pct,
   // so wake_up() can restore the user's chosen level.
   ledcWrite(BRIGHTNESS_PIN, map(IDLE_BRIGHTNESS_PCT, 0, 100, 0, MAX_BRIGHTNESS));
@@ -348,8 +356,18 @@ void go_idle() {
   Serial.println("Display idle");
 }
 
+// Cinema mode: still playing, but idle-timed-out. Dim the backlight but KEEP
+// rendering the card (the fetch loop repaints it at this reduced brightness).
+// Does not overwrite current_brightness_pct, so a new title restores full level.
+void go_dim() {
+  is_dimmed = true;
+  ledcWrite(BRIGHTNESS_PIN, map(IDLE_BRIGHTNESS_PCT, 0, 100, 0, MAX_BRIGHTNESS));
+  Serial.println("Display dimmed (still playing)");
+}
+
 void wake_up() {
   is_idle = false;
+  is_dimmed = false;
   set_brightness(current_brightness_pct);
   Serial.println("Display active");
 }
