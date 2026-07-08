@@ -410,6 +410,40 @@ def current_session():
     return None
 
 
+def emby_select_session(sessions, users):
+    """First session with a Movie/Episode NowPlayingItem for an allowed user."""
+    for s in sessions:
+        item = s.get("NowPlayingItem")
+        if not item or item.get("Type") not in ("Movie", "Episode"):
+            continue
+        if users and (s.get("UserName") or "").lower() not in users:
+            continue
+        return s
+    return None
+
+
+def emby_extras(item):
+    """Network extras for an Emby item: TMDB stinger + downloaded art."""
+    x = {"stinger": [], "poster": False, "backdrop": False, "logo": False}
+    try:
+        tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb")
+        if TMDB_KEY and item.get("Type") == "Movie" and tmdb_id:
+            x["stinger"] = tmdb_stinger(tmdb_id)
+    except Exception as e:
+        print(f"emby stinger failed: {e}", flush=True)
+    try:
+        x.update(emby_download_art(item))
+    except Exception as e:
+        print(f"emby art failed: {e}", flush=True)
+    return x
+
+
+def emby_current_session():
+    sessions = emby_fetch_json("/Sessions")
+    s = emby_select_session(sessions, USERS)
+    return parse_emby_session(s, extras=emby_extras) if s else None
+
+
 def load_settings():
     try:
         with open(SETTINGS_PATH) as f:
@@ -657,6 +691,15 @@ def selftest():
                           600, 400) == (
         "http://emby:8096/Items/79372/Images/Backdrop/0"
         "?maxWidth=600&maxHeight=400&api_key=KEY")
+    sessions = [
+        {"UserName": "Bob"},  # no NowPlayingItem -> skipped
+        {"UserName": "Alice", "NowPlayingItem": {"Type": "Photo"}},  # wrong type
+        {"UserName": "Alice", "NowPlayingItem": {"Type": "Movie", "Id": "9"},
+         "PlayState": {}},
+    ]
+    assert emby_select_session(sessions, set()) is sessions[2]
+    assert emby_select_session(sessions, {"alice"}) is sessions[2]
+    assert emby_select_session(sessions, {"bob"}) is None
     print("selftest ok")
 
 
