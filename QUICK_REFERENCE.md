@@ -1,276 +1,98 @@
 # Quick Reference: Emby + ESP32 Support
 
-Fast lookup for common tasks and configurations.
+Fast lookup for env vars, routes, and file layout. Everything here is
+implemented in the single file `cast/cast.py` — there is no separate module
+tree.
 
-## Configuration Cheat Sheet
+## File layout
 
-### Plex + Nest Hub (Original)
-```yaml
-environment:
-  BACKEND_TYPE: plex
-  PLEX_HOST: http://localhost:32400
-  PLEX_TOKEN: your-plex-token
-  DEVICE_TYPE: cast
-  HUB_IP: 192.168.1.50
-  PAGE_URL: http://192.168.1.10:8084/image
+```
+cast/cast.py          # the whole app: loop, HTTP server, both backends, both device targets
+cast/settings.html     # settings UI template served at / and /settings
+esp32/marquee_display.ino   # reference ESP32 firmware (hardware-unverified)
+output/                # generated: now-playing.json, index.html (the card), static assets
+docs/ESPHOME/          # ESPHome-based DIY display guides (alternative to the .ino)
+ARCHITECTURE_EMBY_ESP32.md  # design/rationale
+IMPLEMENTATION_GUIDE.md     # how the seams are wired, how to extend them
 ```
 
-### Emby + Nest Hub
-```yaml
-environment:
-  BACKEND_TYPE: emby
-  BACKEND_HOST: http://192.168.1.20:8096
-  BACKEND_TOKEN: your-emby-api-key
-  DEVICE_TYPE: cast
-  DEVICE_ADDRESS: 192.168.1.50
-  PAGE_URL: http://192.168.1.10:8084/image
-```
+## Environment variables
 
-### Plex + ESP32
-```yaml
-environment:
-  BACKEND_TYPE: plex
-  PLEX_HOST: http://localhost:32400
-  PLEX_TOKEN: your-plex-token
-  DEVICE_TYPE: esp32
-  DEVICE_ADDRESS: 192.168.1.100
-  DEVICE_PORT: 80
-  PAGE_URL: http://192.168.1.10:8084/image
-```
+| Var | Purpose | Default |
+|---|---|---|
+| `MEDIA_BACKEND` | `plex` or `emby` | `plex` |
+| `PLEX_HOST` | Plex server URL | — |
+| `PLEX_TOKEN` | Plex auth token | — |
+| `EMBY_HOST` | Emby server URL | — |
+| `EMBY_API_KEY` | Emby API key | — |
+| `MEDIA_USERS` | Limit to specific user(s) (falls back to `PLEX_USERS` if unset) | — |
+| `CAST_TARGET` | `nest` or `esp32` | `nest` |
+| `HUB_IP` | Nest/Cast device IP | — |
+| `ESP32_HOST` | ESP32 display IP/host | — |
+| `ESP32_PORT` | ESP32 display port | `80` |
+| `PAGE_URL` | Card page URL to cast (Nest target) | — |
+| `TMDB_API_KEY` | Enables credits-scene (`stinger`) detection | — |
+| `POLL_SECONDS` | Loop interval | `5` |
+| `SERVE_PORT` | Built-in HTTP server port | `8084` |
+| `REPO_DIR` | App/repo root inside container | `/app` |
+| `DATA_DIR` | Persistent data/config dir | `/config` |
 
-### Emby + ESP32
-```yaml
-environment:
-  BACKEND_TYPE: emby
-  BACKEND_HOST: http://192.168.1.20:8096
-  BACKEND_TOKEN: your-emby-api-key
-  DEVICE_TYPE: esp32
-  DEVICE_ADDRESS: 192.168.1.100
-  DEVICE_PORT: 80
-  PAGE_URL: http://192.168.1.10:8084/image
-```
+## Switching backend / target
 
-## ESP32 Testing
-
-### Verify Connectivity
 ```bash
-curl http://192.168.1.100/status
+# Emby instead of Plex
+MEDIA_BACKEND=emby EMBY_HOST=http://emby.local:8096 EMBY_API_KEY=xxxx ...
+
+# ESP32 instead of a Nest Hub
+CAST_TARGET=esp32 ESP32_HOST=192.168.1.50 ESP32_PORT=80 ...
 ```
 
-### Display Content
+Both switches are independent — e.g. `MEDIA_BACKEND=emby` + `CAST_TARGET=esp32`
+works the same as any other combination, since both seams only communicate
+through the normalized `now-playing.json` dict.
+
+## HTTP routes (built-in server, `SERVE_PORT`, default 8084)
+
+| Route | Purpose |
+|---|---|
+| `/` , `/settings` | Settings UI (`cast/settings.html`) |
+| `/image` | The card page (`output/index.html`) |
+| `/settings.json` | Current settings as JSON |
+| `/devices` | Device listing |
+| `/healthz` | Basic health check |
+| `/api/now-playing.json` (also `/now-playing.json`) | Read-only, CORS-enabled card state. `{"playing": false}` when idle. This is what an ESP32/ESPHome display polls. |
+| `/api/healthz` | `{ok, version}`, CORS-enabled |
+| `/release-notes` | Renders `CHANGELOG.md` |
+| static files | Served from `output/` by basename |
+
+## Sanity-checking without a live server
+
 ```bash
-curl -X POST http://192.168.1.100/display \
-  -H 'Content-Type: application/json' \
-  -d '{"card_url": "http://192.168.1.10:8084/image"}'
+python cast/cast.py --selftest
 ```
 
-### Set Brightness (0-100)
-```bash
-curl -X POST http://192.168.1.100/brightness \
-  -H 'Content-Type: application/json' \
-  -d '{"level": 75}'
-```
+Runs the parsing/URL-building self-checks (Plex + Emby parsing, ESP32 JSON-URL
+derivation, etc.) without needing a reachable Plex/Emby/ESP32.
 
-### Stop Display
-```bash
-curl -X POST http://192.168.1.100/stop
-```
+## now-playing.json — the normalized contract
 
-## Docker Commands
+Both backends produce the same dict; both device targets (and any ESP32/ESPHome
+display) only ever consume it:
 
-### Build and Start
-```bash
-docker compose up -d --build
-```
+`playing`, `type` (`movie`/`episode`), `key`, `title`, `year`, `subtitle`
+(episodes), `state` (`playing`/`paused`), `progress` (`offsetMs`/`durationMs`),
+`runtime`, `summary`, `contentRating`, `genres` (≤3), `media`, `scores`
+(`imdb`, `rtCritic`, `rtCriticFresh`, + Plex-only `rtAudience`/
+`rtAudienceFresh`), `stinger` (`during`/`after`), `poster`/`backdrop`/`logo`
+(bool).
 
-### View Logs
-```bash
-docker compose logs -f marquee
-```
+## Status at a glance
 
-### Restart Service
-```bash
-docker compose restart marquee
-```
+- Plex + Nest: unchanged, existing behavior, guarded by `--selftest`.
+- Emby backend: implemented, unit/mock-verified; live verification against a
+  real Emby server still pending.
+- ESP32 target + reference firmware (`esp32/marquee_display.ino`):
+  implemented, hardware-unverified (board on order).
 
-### Stop Service
-```bash
-docker compose down
-```
-
-## Python Testing
-
-### Test Plex Backend
-```python
-from cast.media_backends import PlexBackend
-
-backend = PlexBackend('http://localhost:32400', 'your-token')
-print('Healthy:', backend.get_health())
-session = backend.get_current_session(set())
-print('Now playing:', session)
-```
-
-### Test Emby Backend
-```python
-from cast.media_backends import EmbyBackend
-
-backend = EmbyBackend('http://localhost:8096', 'your-api-key')
-print('Healthy:', backend.get_health())
-session = backend.get_current_session(set())
-print('Now playing:', session)
-```
-
-### Test Cast Device
-```python
-from cast.device_targets import GoogleCastTarget
-
-device = GoogleCastTarget('192.168.1.50')
-print('Available:', device.is_available())
-device.cast_url('http://192.168.1.10:8084/image')
-```
-
-### Test ESP32 Device
-```python
-from cast.device_targets import ESP32Target
-
-device = ESP32Target('192.168.1.100', 80)
-print('Available:', device.is_available())
-device.cast_url('http://192.168.1.10:8084/image')
-device.set_brightness(75)
-```
-
-## Environment Variables Reference
-
-| Variable | Type | Default | Notes |
-|----------|------|---------|-------|
-| `BACKEND_TYPE` | string | `plex` | `plex` or `emby` |
-| `BACKEND_HOST` | string | `http://localhost:32400` | Plex: 32400, Emby: 8096 |
-| `BACKEND_TOKEN` | string | (required) | X-Plex-Token or Emby API key |
-| `DEVICE_TYPE` | string | `cast` | `cast` or `esp32` |
-| `DEVICE_ADDRESS` | string | (from HUB_IP) | Device IP address |
-| `DEVICE_PORT` | int | 80 | Used for ESP32 only |
-| `PAGE_URL` | string | (required) | Server URL for casting |
-| `POLL_SECONDS` | int | 5 | Polling interval |
-| `PLEX_USERS` | string | (empty) | Comma-separated usernames |
-| `PLEX_HOST` | string | (legacy) | Backward compat for Plex |
-| `PLEX_TOKEN` | string | (legacy) | Backward compat for Plex |
-| `HUB_IP` | string | (legacy) | Backward compat for Cast |
-
-## File Structure
-
-```
-marquee/
-├── cast/
-│   ├── cast.py                    (main entry point)
-│   ├── settings.html              (UI)
-│   ├── media_backends.py          (NEW: Plex/Emby abstraction)
-│   ├── device_targets.py          (NEW: Cast/ESP32 abstraction)
-│   └── marquee_service.py         (NEW: orchestration)
-├── output/
-│   ├── index.html                 (card template)
-│   └── now-playing.json           (generated)
-├── esp32/
-│   └── marquee_display.ino        (NEW: firmware)
-├── docs/
-├── compose.yaml
-├── Dockerfile
-├── requirements.txt
-├── ARCHITECTURE_EMBY_ESP32.md     (NEW: design)
-├── IMPLEMENTATION_GUIDE.md        (NEW: integration)
-├── ESP32_SETUP.md                 (NEW: hardware)
-├── FEATURE_SUMMARY.md             (NEW: overview)
-└── QUICK_REFERENCE.md             (NEW: this file)
-```
-
-## Troubleshooting Matrix
-
-### Service won't start
-- Check logs: `docker compose logs marquee`
-- Verify env vars are set correctly
-- Ensure media server is reachable: `curl $BACKEND_HOST`
-
-### Device unreachable
-- Verify device IP: `ping $DEVICE_ADDRESS`
-- Check on same network as Marquee server
-- For Cast: Verify `catt scan` finds device
-- For ESP32: Check WiFi connection in serial monitor
-
-### No content displayed
-- Verify content is actually playing
-- Check `now-playing.json` exists and is updating: `curl http://localhost:8084/now-playing.json`
-- Verify device received cast command in logs
-
-### ESP32 won't connect to WiFi
-- Check SSID and password in firmware
-- Verify WiFi is 2.4GHz (ESP32 limitation)
-- Check serial monitor for errors
-
-### Art not loading
-- Verify media server has artwork
-- Check proxy/firewall isn't blocking image URLs
-- For Plex: Verify token has permission to view artwork
-
-## Documentation Map
-
-- **FEATURE_SUMMARY.md** → Start here for overview
-- **ARCHITECTURE_EMBY_ESP32.md** → Design and API details
-- **IMPLEMENTATION_GUIDE.md** → How to integrate into cast.py
-- **ESP32_SETUP.md** → Hardware and firmware setup
-- **QUICK_REFERENCE.md** → This file (quick lookups)
-
-## Getting Help
-
-1. Check logs: `docker compose logs -f marquee`
-2. Review QUICK_REFERENCE.md (this file)
-3. Check ARCHITECTURE_EMBY_ESP32.md for API details
-4. Check ESP32_SETUP.md for hardware issues
-5. Check IMPLEMENTATION_GUIDE.md for integration questions
-6. Review code comments in Python modules
-
-## Common Tasks
-
-### Switch from Plex to Emby
-1. Get Emby API key from settings
-2. Update `compose.yaml`: `BACKEND_TYPE: emby`, `BACKEND_HOST`, `BACKEND_TOKEN`
-3. `docker compose up -d --build`
-
-### Add ESP32 Display
-1. Flash ESP32 with `esp32/marquee_display.ino`
-2. Find ESP32 IP from serial monitor
-3. Update `compose.yaml`: `DEVICE_TYPE: esp32`, `DEVICE_ADDRESS`
-4. `docker compose up -d --build`
-
-### Test New Backend Before Deploying
-```python
-python3 << 'EOF'
-from cast.media_backends import create_backend
-backend = create_backend("emby", "http://localhost:8096", "your-key")
-print("Health:", backend.get_health())
-print("Session:", backend.get_current_session(set()))
-EOF
-```
-
-### Verify Device Connectivity
-```bash
-# Cast device
-catt -d 192.168.1.50 info
-
-# ESP32 device
-curl http://192.168.1.100/status
-```
-
-## Performance Tips
-
-- **Plex**: Keep server on same LAN, use dedicated network if possible
-- **Emby**: Similar to Plex; verify API key has proper permissions
-- **Cast**: Ensure Hub is powered and WiFi connected
-- **ESP32**: Keep within WiFi range; 40MHz SPI frequency should be adequate
-- **Polling**: Default 5s is balanced; don't go below 2s
-
-## Version Info
-
-- **Feature Branch**: `feature/emby-esp32-support`
-- **Base Version**: Marquee 1.3.0+
-- **Python**: 3.6+
-- **ESP32 Firmware**: 1.0.0 (reference)
-- **Dependencies**: None new (uses stdlib + existing `catt`)
+See `FEATURE_SUMMARY.md` for the full status writeup and
+`ARCHITECTURE_EMBY_ESP32.md` / `IMPLEMENTATION_GUIDE.md` for design details.

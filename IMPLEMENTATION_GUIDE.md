@@ -1,293 +1,136 @@
-# Implementation Guide: Emby + ESP32 Integration
+# Implementation Guide: Emby backend & ESP32 target
 
-This guide walks through integrating the new abstraction layers into the existing `cast/cast.py` main service.
+How the Emby media-source seam and the ESP32 display-target seam actually work
+inside `cast/cast.py`, and how to extend either one. For the high-level picture
+and diagrams, see `ARCHITECTURE_EMBY_ESP32.md` — this doc is the "how the seams
+are wired in code" companion to it.
 
-## Phase 1: Refactor Existing cast.py
+> Everything described here lives in the single file `cast/cast.py`. There is
+> no separate module/abstraction layer — earlier drafts of these docs
+> described one that was never built.
 
-### 1.1 Extract Plex polling into PlexBackend
+## The shape of the app
 
-Move these functions from `cast.py` to `media_backends.py` (already done in `PlexBackend`):
-- `plex_url()`
-- `fetch_xml()`
-- `library_extras()`
-- `parse_session()`
-- `current_session()`
-- `tmdb_stinger()`
-- `download_art()` (move to service layer)
+`cast/cast.py` is one Python 3.13 (stdlib-only) script that Docker runs
+directly (`python cast/cast.py`). It's a push service built around one loop:
 
-**Status**: ✅ Complete in `media_backends.py`
-
-### 1.2 Extract Google Cast control into GoogleCastTarget
-
-Move these functions from `cast.py` to `device_targets.py` (already done in `GoogleCastTarget`):
-- `catt()`
-- `dashcast_active()`
-- `scan_devices()` (move to service layer for device discovery)
-
-**Status**: ✅ Complete in `device_targets.py`
-
-### 1.3 Create MarqueeService integration
-
-The new `MarqueeService` class orchestrates polling and casting. The updated `cast.py` will:
-
-1. Parse environment variables for backend/device type
-2. Create backend + device via factories
-3. Instantiate `MarqueeService`
-4. Keep existing HTTP server (settings UI, card serving)
-5. Run service loop in background thread
-
-**Status**: ✅ `marquee_service.py` ready
-
-## Phase 2: Update cast.py (Main Entry Point)
-
-The existing `cast.py` needs minimal changes:
-
-```python
-# OLD (Plex-only):
-while True:
-    try:
-        info = current_session()  # Direct Plex poll
-        atomic_write(JSON_PATH, json.dumps(info or {"playing": False}))
-        playing = bool(info)
-        if playing != last_playing or tick % 6 == 0:
-            if playing:
-                catt("cast_site", PAGE_URL)  # Direct catt call
-            elif last_playing:
-                catt("stop")
-        last_playing = playing
-        tick += 1
-    except Exception as e:
-        print(f"loop error: {e}", flush=True)
-    time.sleep(POLL)
-
-# NEW (pluggable):
-service = MarqueeService(
-    backend_type=os.environ.get("BACKEND_TYPE", "plex"),
-    backend_host=os.environ.get("BACKEND_HOST", PLEX),
-    backend_token=os.environ.get("BACKEND_TOKEN", TOKEN),
-    device_type=os.environ.get("DEVICE_TYPE", "cast"),
-    device_address=os.environ.get("DEVICE_ADDRESS", HUB_IP),
-    device_port=os.environ.get("DEVICE_PORT"),
-    poll_seconds=POLL,
-    output_dir=OUTPUT,
-    data_dir=DATA_DIR,
-    page_url=PAGE_URL,
-)
-service.run(USERS)
+```
+loop():
+    every POLL_SECONDS (default 5):
+        session = get_session()
+        write output/now-playing.json (normalized dict)
+        on play -> device_show(PAGE_URL)
+        on stop -> device_hide()
 ```
 
-### Changes to cast.py
+It also runs a built-in HTTP server (`ThreadingHTTPServer` on `SERVE_PORT`,
+default 8084) that serves the settings UI, the card page, and the read-only
+`/api/now-playing.json` API — see `QUICK_REFERENCE.md` for the full route list.
 
-1. **Add imports** at top:
-   ```python
-   from marquee_service import MarqueeService
-   from media_backends import create_backend
-   from device_targets import create_device_target
-   ```
+## Seam 1: media backend (`MEDIA_BACKEND=plex|emby`)
 
-2. **Extend environment parsing**:
-   ```python
-   BACKEND_TYPE = os.environ.get("BACKEND_TYPE", "plex")
-   BACKEND_HOST = os.environ.get("BACKEND_HOST", PLEX)
-   BACKEND_TOKEN = os.environ.get("BACKEND_TOKEN", TOKEN)
-   DEVICE_TYPE = os.environ.get("DEVICE_TYPE", "cast")
-   DEVICE_ADDRESS = os.environ.get("DEVICE_ADDRESS", HUB_IP)
-   DEVICE_PORT = os.environ.get("DEVICE_PORT")
-   ```
+The entry point is `get_session()`, which dispatches on `MEDIA_BACKEND`:
 
-3. **Update loop() function**:
-   - Replace the while loop with `MarqueeService` instantiation and call to `.run()`
-   - Keep the `serve_web()` thread unchanged (still serves settings UI and card)
-   - Add a `/status` endpoint to `WebHandler` that calls `service.get_status()`
+- `plex` (default) → `current_session()` → fetches Plex's `GET
+  /status/sessions` (XML) and hands it to `parse_session()`.
+- `emby` → `emby_current_session()` → fetches Emby's `GET
+  /Sessions?api_key=...` (JSON) and hands it to `parse_emby_session()`.
 
-4. **Keep backward compatibility**:
-   - Default `BACKEND_TYPE="plex"` and `DEVICE_TYPE="cast"`
-   - Existing env vars (`PLEX_HOST`, `PLEX_TOKEN`, `HUB_IP`) still work
-   - No breaking changes to docker-compose.yaml
+Both parsers produce **the same normalized dict** — see "The now-playing.json
+contract" below. Nothing downstream (the loop, the HTTP server, the card page,
+an ESP32) ever branches on which backend is active; they only ever see the
+normalized dict.
 
-**Location to edit**: `cast/cast.py` lines 394-433 (the `loop()` function)
+Emby-specific notes:
+- Auth is a query-param `api_key`, not Plex's `X-Plex-Token` header.
+- Duration is in ticks (÷ 10,000 = ms), where Plex is already ms.
+- Genres/ratings come embedded in the `/Sessions` payload (Plex needs a
+  second `/library/metadata` fetch).
+- Emby has no RT *audience* score, only `CriticRating` (→ `rtCritic`).
+  `CommunityRating` maps to `imdb`.
 
-## Phase 3: Update Settings UI (Optional but Recommended)
+### Adding a third backend
 
-The `cast/settings.html` could add a "Backend & Device" section:
+1. Write a `<name>_current_session()` that talks to the new server and
+   returns its raw session payload.
+2. Write a `parse_<name>_session()` that maps that payload onto the same
+   normalized dict keys everything else already consumes (see the contract
+   below — copy `parse_emby_session()`'s shape, it's the newer of the two).
+3. Add a branch in `get_session()` for the new `MEDIA_BACKEND` value.
+4. Add whatever env vars the new backend needs (host/token/etc.) next to the
+   existing `PLEX_*` / `EMBY_*` ones.
 
-```html
-<div class="settings-group">
-  <h3>Backend & Device</h3>
-  
-  <label>
-    Media Server Type:
-    <select id="backendType" name="backendType">
-      <option value="plex">Plex</option>
-      <option value="emby">Emby</option>
-    </select>
-  </label>
-  
-  <label>
-    Display Device:
-    <select id="deviceType" name="deviceType">
-      <option value="cast">Google Cast (Nest Hub)</option>
-      <option value="esp32">ESP32 Display</option>
-    </select>
-  </label>
-  
-  <!-- Plex-specific -->
-  <div id="plex-settings" class="backend-specific">
-    <label>Plex Token: <input type="password" name="plexToken" /></label>
-  </div>
-  
-  <!-- Emby-specific -->
-  <div id="emby-settings" class="backend-specific" style="display:none">
-    <label>Emby Host: <input type="text" name="embyHost" placeholder="http://localhost:8096" /></label>
-    <label>Emby API Key: <input type="password" name="embyKey" /></label>
-  </div>
-  
-  <!-- ESP32-specific -->
-  <div id="esp32-settings" class="device-specific" style="display:none">
-    <label>ESP32 IP: <input type="text" name="esp32Ip" placeholder="192.168.1.100" /></label>
-    <label>ESP32 Port: <input type="number" name="esp32Port" placeholder="80" value="80" /></label>
-  </div>
-</div>
-```
+That's it — the loop, the HTTP server, the card page, and any ESP32/ESPHome
+display keep working unmodified because they only depend on the normalized
+dict, never on backend internals.
 
-Then in JavaScript:
-- Load current backend/device type from `/settings.json`
-- Show/hide fields based on selection
-- Save to settings and restart service (or hot-reload)
+## Seam 2: device target (`CAST_TARGET=nest|esp32`)
 
-**Location**: `cast/settings.html` (add new section)
+Four functions form the seam, each dispatching on `CAST_TARGET`:
 
-## Phase 4: Docker & Deployment
+- `device_show(page_url)` — start displaying.
+  - `nest`: `nest_show` runs `catt cast_site <PAGE_URL>` (DashCast loads the
+    card page in the Hub's browser).
+  - `esp32`: `esp32_show` does `POST http://ESP32_HOST:ESP32_PORT/display`
+    with body `{"json_url": "http://<marquee>/now-playing.json"}`.
+- `device_hide()` — stop displaying.
+  - `nest`: `nest_hide` runs `catt stop`.
+  - `esp32`: `esp32_hide` does `POST /stop`.
+- `device_available()` — is a target configured/reachable.
+  - `nest`: checks `hub_ip()` is set.
+  - `esp32`: `GET /status` reachable.
+- `device_active()` — is something currently showing.
+  - `nest`: `dashcast_active()`.
+  - `esp32`: `GET /status` → `displaying` flag.
 
-### Update compose.yaml
+Why the two targets look different: a Nest/Cast device runs a browser, so
+Marquee just tells it (push) to load the card URL, and the browser itself
+polls the JSON for live progress. A bare ESP32 can't run a browser, so Marquee
+only pushes the show/hide *lifecycle*; the device itself *pulls*
+`now-playing.json` to render the card natively (see `esp32/marquee_display.ino`,
+reference firmware, hardware-unverified — board is on order).
 
-Add example configurations as comments:
+### Adding a third device target
 
-```yaml
-services:
-  marquee:
-    build: .
-    image: marquee:local
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      # === Media Backend ===
-      # BACKEND_TYPE: plex          # default: plex
-      # BACKEND_HOST: http://localhost:32400
-      # BACKEND_TOKEN: your-plex-token
-      
-      # Uncomment for Emby:
-      # BACKEND_TYPE: emby
-      # BACKEND_HOST: http://192.168.1.20:8096
-      # BACKEND_TOKEN: your-emby-api-key
-      
-      # === Display Device ===
-      # DEVICE_TYPE: cast           # default: cast
-      # DEVICE_ADDRESS: 192.168.1.50
-      
-      # Uncomment for ESP32:
-      # DEVICE_TYPE: esp32
-      # DEVICE_ADDRESS: 192.168.1.100
-      # DEVICE_PORT: 80
-      
-      # === Service ===
-      PAGE_URL: http://192.168.1.10:8084/image
-      POLL_SECONDS: 5
-      PLEX_USERS: ""              # comma-separated, empty = all
-    volumes:
-      - ./data:/config
-```
+1. Write `<name>_show(page_url)` / `<name>_hide()` that do whatever's needed
+   to start/stop the display.
+2. Write `<name>_available()` / `<name>_active()` if the target can report
+   those (used for settings-UI status and idempotency).
+3. Add a branch in `device_show()` / `device_hide()` / `device_available()` /
+   `device_active()` for the new `CAST_TARGET` value.
+4. Add whatever env vars the new target needs (host/port/etc.) next to the
+   existing `HUB_IP` / `ESP32_HOST` / `ESP32_PORT` ones.
 
-### requirements.txt
+The device side never needs to know which media backend produced the data —
+it only ever renders/pulls `now-playing.json`.
 
-No new Python dependencies needed. Existing:
-- `catt` (for Google Cast)
-- Standard library for HTTP/JSON/subprocess
+## The `now-playing.json` contract — the real extension point
 
-## Phase 5: Testing Checklist
+Both seams meet at one normalized dict, written to `output/now-playing.json`
+and served read-only at `/api/now-playing.json`. This is intentionally the
+*only* thing a new backend has to produce and the *only* thing a new device
+target has to consume — nothing else needs to change.
 
-### Plex + Nest Hub (Original)
-- [ ] Start with no new env vars
-- [ ] Verify Plex polling works
-- [ ] Verify Cast device discovery
-- [ ] Verify card displays on Hub
-- [ ] Verify playback transitions
+Keys: `playing` (bool), `type` (`movie`/`episode`), `key`, `title`, `year`,
+`subtitle` (episodes: "S# · E# · Name"), `state` (`playing`/`paused`),
+`progress` (`offsetMs`, `durationMs`), `runtime` (e.g. "1h 59m"), `summary`,
+`contentRating`, `genres` (≤3), `media` (e.g. "1080p · H264 · EAC3"), `scores`
+(`imdb`, `rtCritic`, `rtCriticFresh`, and Plex-only `rtAudience` /
+`rtAudienceFresh`), `stinger` (`during`/`after`), and `poster`/`backdrop`/
+`logo` booleans.
 
-### Emby + Nest Hub
-- [ ] Set `BACKEND_TYPE=emby`, `BACKEND_HOST=http://emby:8096`, `BACKEND_TOKEN=key`
-- [ ] Verify Emby session polling
-- [ ] Verify Cast still works
-- [ ] Verify card displays metadata from Emby
+If idle, the API returns `{"playing": false}`.
 
-### Plex + ESP32
-- [ ] Flash ESP32 firmware
-- [ ] Set `DEVICE_TYPE=esp32`, `DEVICE_ADDRESS=192.168.1.100`
-- [ ] Verify ESP32 API reachable (`curl http://192.168.1.100/status`)
-- [ ] Verify Marquee sends card URL to ESP32
-- [ ] Verify ESP32 displays card (basic rendering)
+## Guarding the unchanged path
 
-### Emby + ESP32
-- [ ] Combine all settings
-- [ ] Verify end-to-end: Emby → Marquee → ESP32
+Plex + Nest behavior is unchanged by any of this. Run
+`python cast/cast.py --selftest` to sanity-check the parsing/URL-building
+logic without a live server. Emby is unit/mock-verified but not yet verified
+against a live Emby server; the ESP32 target and firmware are implemented but
+hardware-unverified.
 
-## Phase 6: Documentation
+## See also
 
-### Update README.md
-
-Add a section:
-
-```markdown
-## Media Servers & Displays
-
-Marquee now supports:
-
-**Media Servers:**
-- Plex (default)
-- Emby
-
-**Display Devices:**
-- Google Nest Hub / Chromecast (default)
-- ESP32 microcontroller
-
-Set `BACKEND_TYPE` and `DEVICE_TYPE` to choose. See [ARCHITECTURE_EMBY_ESP32.md](ARCHITECTURE_EMBY_ESP32.md) for details.
-```
-
-### API Reference
-
-Document the new env vars in README's Configuration section.
-
-## Implementation Order
-
-**For MVP (minimal viable product):**
-
-1. ✅ Create abstraction layers (`media_backends.py`, `device_targets.py`, `marquee_service.py`)
-2. ✅ Implement Plex and Emby backends
-3. ✅ Implement Google Cast and ESP32 targets
-4. ✅ Write ESP32 firmware reference
-5. ✅ Document architecture
-6. **TODO**: Refactor `cast.py` to use `MarqueeService` (backward-compatible)
-7. **TODO**: Test all combinations
-8. **TODO**: Update README and compose.yaml
-9. **TODO**: Optional: Settings UI updates
-
-## Rollback Plan
-
-If issues arise:
-
-1. Revert to `main` branch (original Plex + Cast only)
-2. Feature branch remains available for bugfixes
-3. Can gradually merge to main after thorough testing
-
-## FAQ
-
-**Q: Will existing Plex + Nest Hub setups break?**
-A: No. Default behavior is unchanged. Just redeploy the container.
-
-**Q: How do I switch backends mid-deployment?**
-A: Update env vars and restart the container. Settings persist in `/config/settings.json`.
-
-**Q: Does ESP32 need the full Marquee server?**
-A: Yes, but the server just needs to be accessible via HTTP. The ESP32 doesn't require Docker—just the microcontroller and a network connection.
-
-**Q: Can I run multiple ESP32 devices?**
-A: Not yet—`MarqueeService` currently manages one device. Multi-device support is a future enhancement.
+- `ARCHITECTURE_EMBY_ESP32.md` — design rationale and diagrams.
+- `QUICK_REFERENCE.md` — env vars, routes, file layout cheat-sheet.
+- `FEATURE_SUMMARY.md` — current implementation/verification status.
