@@ -42,6 +42,15 @@ SERVE_PORT = int(os.environ.get("SERVE_PORT", "8084"))
 USERS = {u.strip().lower()
          for u in os.environ.get("PLEX_USERS", "").split(",") if u.strip()}
 
+BACKEND = os.environ.get("MEDIA_BACKEND", "plex").lower()
+if BACKEND not in ("plex", "emby"):
+    BACKEND = "plex"
+
+
+def get_session():
+    """Current normalized now-playing dict from the configured backend, or None."""
+    return emby_current_session() if BACKEND == "emby" else current_session()
+
 OUTPUT = os.path.join(REPO, "output")
 JSON_PATH = os.path.join(OUTPUT, "now-playing.json")
 DATA_DIR = os.environ.get("DATA_DIR", OUTPUT)
@@ -551,9 +560,13 @@ def serve_web():
 
 def loop():
     os.makedirs(DATA_DIR, exist_ok=True)
-    missing = [name for name, value in (("PAGE_URL", PAGE_URL),
-                                        ("PLEX_HOST", PLEX), ("PLEX_TOKEN", TOKEN))
-               if not value]
+    if BACKEND == "emby":
+        required = (("PAGE_URL", PAGE_URL), ("EMBY_HOST", EMBY),
+                    ("EMBY_API_KEY", EMBY_KEY))
+    else:
+        required = (("PAGE_URL", PAGE_URL), ("PLEX_HOST", PLEX),
+                    ("PLEX_TOKEN", TOKEN))
+    missing = [name for name, value in required if not value]
     if missing:
         raise SystemExit("Missing required environment variables: " + ", ".join(missing))
     if not os.path.exists(SETTINGS_PATH):
@@ -566,7 +579,7 @@ def loop():
     last_playing, tick = None, 0
     while True:
         try:
-            info = current_session()
+            info = get_session()
             atomic_write(JSON_PATH, json.dumps(info or {"playing": False}))
             playing = bool(info)
             if playing != last_playing or tick % 6 == 0:
@@ -622,6 +635,8 @@ SAMPLE_EMBY_EXTRAS = {"stinger": ["after"],
 
 
 def selftest():
+    assert BACKEND in ("plex", "emby")
+    assert get_session is not None  # dispatcher exists and is chosen by BACKEND
     info = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
     assert info["title"] == "The Devil Wears Prada 2"
     assert info["key"] == "79372"
