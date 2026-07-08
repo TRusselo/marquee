@@ -206,6 +206,73 @@ def pretty_resolution(res):
     return {"4k": "4K", "sd": "SD"}.get(res.lower(), res + "p" if res.isdigit() else res.upper())
 
 
+def emby_ticks_to_ms(ticks):
+    return int(ticks) // 10000 if ticks else None
+
+
+def emby_resolution(height):
+    if not height:
+        return None
+    return {2160: "4K", 1080: "1080p", 720: "720p", 480: "480p"}.get(
+        int(height), f"{int(height)}p")
+
+
+def parse_emby_session(session, extras):
+    """One Emby /Sessions entry -> normalized now-playing dict (matches Plex)."""
+    item = session.get("NowPlayingItem") or {}
+    play = session.get("PlayState") or {}
+    is_episode = item.get("Type") == "Episode"
+    info = {
+        "playing": True,
+        "type": (item.get("Type") or "").lower(),
+        "key": item.get("Id"),
+        "title": item.get("SeriesName") if is_episode else item.get("Name"),
+        "year": item.get("ProductionYear"),
+    }
+    if is_episode and item.get("ParentIndexNumber") and item.get("IndexNumber"):
+        info["subtitle"] = (f"S{item['ParentIndexNumber']} · "
+                            f"E{item['IndexNumber']} · {item.get('Name')}")
+    info["state"] = "paused" if play.get("IsPaused") else "playing"
+    offset = emby_ticks_to_ms(play.get("PositionTicks"))
+    duration = emby_ticks_to_ms(item.get("RunTimeTicks"))
+    if offset is not None and duration:
+        info["progress"] = {"offsetMs": offset, "durationMs": duration}
+    if duration:
+        m = duration // 60000
+        info["runtime"] = f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m"
+    if item.get("Overview"):
+        info["summary"] = item["Overview"]
+    if item.get("OfficialRating"):
+        info["contentRating"] = item["OfficialRating"]
+    genres = [g for g in (item.get("Genres") or []) if g]
+    if genres:
+        info["genres"] = genres[:3]
+    streams = item.get("MediaStreams") or []
+    video = next((s for s in streams if s.get("Type") == "Video"), None)
+    audio = next((s for s in streams if s.get("Type") == "Audio"), None)
+    parts = [emby_resolution(video.get("Height")) if video else None,
+             (video.get("Codec") or "").upper() or None if video else None,
+             (audio.get("Codec") or "").upper() or None if audio else None]
+    media = " · ".join(p for p in parts if p)
+    if media:
+        info["media"] = media
+    scores = {}
+    if item.get("CommunityRating"):
+        scores["imdb"] = round(float(item["CommunityRating"]), 1)
+    if item.get("CriticRating") is not None:
+        scores["rtCritic"] = round(float(item["CriticRating"]))
+        scores["rtCriticFresh"] = float(item["CriticRating"]) >= 60
+    if scores:
+        info["scores"] = scores
+    x = extras(item)
+    if x.get("stinger"):
+        info["stinger"] = x["stinger"]
+    info["poster"] = x.get("poster", False)
+    info["backdrop"] = x.get("backdrop", False)
+    info["logo"] = x.get("logo", False)
+    return info
+
+
 def parse_session(video, extras=library_extras):
     """Video element from /status/sessions -> now-playing dict."""
     a = video.get
@@ -443,6 +510,25 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
 SAMPLE_EXTRAS = {"genres": ["Comedy", "Drama"], "imdb": 7.2, "stinger": ["after"],
                  "poster": True, "backdrop": True, "logo": True}
 
+SAMPLE_EMBY_SESSION = {
+    "UserName": "Alice",
+    "NowPlayingItem": {
+        "Name": "The Devil Wears Prada 2", "Type": "Movie",
+        "ProductionYear": 2026, "RunTimeTicks": 71411200000,
+        "Overview": "Miranda returns.", "OfficialRating": "PG-13",
+        "Genres": ["Comedy", "Drama"], "Id": "79372",
+        "ProviderIds": {"Tmdb": "12345", "Imdb": "tt1234567"},
+        "CommunityRating": 7.2, "CriticRating": 77,
+        "MediaStreams": [
+            {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920},
+            {"Type": "Audio", "Codec": "eac3"},
+        ],
+    },
+    "PlayState": {"PositionTicks": 36000000000, "IsPaused": True},
+}
+SAMPLE_EMBY_EXTRAS = {"stinger": ["after"],
+                      "poster": True, "backdrop": True, "logo": True}
+
 
 def selftest():
     info = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
@@ -488,6 +574,25 @@ def selftest():
     assert scan == [{"ip": "192.168.1.50", "name": "Living Room",
                      "model": "Google Inc. Google Nest Hub"}]
     assert IP_RE.match("10.0.0.2") and not IP_RE.match("nest.local")
+    einfo = parse_emby_session(SAMPLE_EMBY_SESSION, extras=lambda item: SAMPLE_EMBY_EXTRAS)
+    assert einfo["type"] == "movie"
+    assert einfo["title"] == "The Devil Wears Prada 2"
+    assert einfo["year"] == 2026
+    assert einfo["state"] == "paused"
+    assert einfo["runtime"] == "1h 59m"
+    assert einfo["media"] == "1080p · H264 · EAC3"
+    assert einfo["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
+    assert einfo["genres"] == ["Comedy", "Drama"]
+    assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
+    assert einfo["stinger"] == ["after"]
+    assert einfo["poster"] and einfo["backdrop"] and einfo["logo"]
+    # episode shape
+    eep = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
+    eep["NowPlayingItem"].update(Type="Episode", SeriesName="Severance",
+                                 ParentIndexNumber=2, IndexNumber=5, Name="The Rundown")
+    einfo = parse_emby_session(eep, extras=lambda item: dict(SAMPLE_EMBY_EXTRAS, stinger=[]))
+    assert einfo["title"] == "Severance"
+    assert einfo["subtitle"] == "S2 · E5 · The Rundown"
     print("selftest ok")
 
 
