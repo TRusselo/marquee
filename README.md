@@ -7,7 +7,7 @@
 [![Docker Image Version](https://img.shields.io/docker/v/jamisonfitz/marquee?sort=semver&logo=docker)](https://hub.docker.com/r/jamisonfitz/marquee/tags)
 [![License](https://img.shields.io/github/license/Jamisonfitz/marquee)](LICENSE)
 
-Marquee turns a Google Nest Hub into a clean Plex now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the Hub to ambient mode when playback stops.
+Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex or Emby** now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the display to ambient mode when playback stops. It can also drive an **ESP32/ESPHome** display, which renders the card by polling Marquee's read-only JSON API.
 
 ![Marquee Split template](docs/screenshots/split.jpg)
 
@@ -26,23 +26,44 @@ Every template is built from the same blocks — title/logo identity, grouped ra
 
 ## Features
 
-- Live Plex now-playing card with five designed templates: Spotlight, Split,
-  Hero, Lower Third, and Big Clock.
+- Live now-playing card from **Plex or Emby** (switchable with one env var),
+  with five designed templates: Spotlight, Split, Hero, Lower Third, and Big Clock.
 - Four themes plus a custom accent color, 12/24-hour clock styles, and
   per-block show/hide toggles.
 - A drag-and-slider editor for moving, sizing, and scaling each card block,
   with an instant demo preview.
 - Persisted settings, health checks, and a Docker-first deployment path.
-- Google Nest Hub casting with clean idle handoff back to ambient mode.
+- **Display targets:** Google Cast devices with a screen (Nest Hub, Chromecast)
+  with clean idle handoff, plus an **ESP32/ESPHome** path that polls
+  `/api/now-playing.json` and renders the card itself.
+- A read-only JSON API (`/api/now-playing.json`, CORS-enabled) for ESP32,
+  ESPHome, and Home Assistant consumers.
 
 ## What You Need
 
 - Docker
-- Plex Media Server on the same LAN
-- A Google Nest Hub on the same LAN
-- A Plex `X-Plex-Token`
+- A media server on the same LAN: **Plex** (with an `X-Plex-Token`) **or Emby**
+  (with an API key)
+- A display on the same LAN: a **Google Cast device with a screen** (Nest Hub,
+  Chromecast) **or an ESP32/ESPHome display**
 
 Marquee is designed for a trusted LAN. It has no login and should not be port-forwarded.
+
+### Display compatibility
+
+The Cast path works with **any Google Cast device that has a screen** — not just
+Nest Hubs. It uses [catt](https://github.com/skorokithakis/catt) to load the card
+via DashCast, so the target must be able to render a web page:
+
+| Device | Works? | Notes |
+|---|:---:|---|
+| Nest Hub / Hub Max | ✅ | reference target |
+| Chromecast / Chromecast w/ Google TV | ✅ | renders on the attached TV |
+| TV with Chromecast built-in / Android TV | ✅ usually | DashCast support varies by firmware |
+| Nest Mini / Nest Audio / audio-only Cast | ❌ | no screen to render on |
+
+For displays that can't run a browser (a bare ESP32 + LCD), use the ESP32/ESPHome
+path instead: the device polls `/api/now-playing.json` and draws the card itself.
 
 ## Quick Start
 
@@ -79,23 +100,54 @@ Required environment variables:
   machine; otherwise its LAN IP
 - `PLEX_TOKEN`
 
-Cast device: open the settings page and press **Scan** — Marquee discovers
-Google Cast devices on your LAN and you pick your Hub from a dropdown.
-(`HUB_IP` still works as an env fallback; discovery needs the container on
-the same network/VLAN as the Hub, which host networking gives you.)
+(These three are required when `MEDIA_BACKEND=plex`, the default.)
+
+### Choosing the media backend
+
+- `MEDIA_BACKEND` — `plex` (default) or `emby`.
+- For Emby, set `EMBY_HOST` (e.g. `http://localhost:8096`) and `EMBY_API_KEY`
+  instead of `PLEX_HOST`/`PLEX_TOKEN`.
+
+### Choosing the display target
+
+- `CAST_TARGET` — `nest` (default, Google Cast via `catt`) or `esp32`.
+- For a Cast device (default): open the settings page and press **Scan** —
+  Marquee discovers Google Cast devices on your LAN and you pick your display
+  from a dropdown. (`HUB_IP` still works as an env fallback; discovery needs the
+  container on the same network/VLAN as the display, which host networking gives
+  you.)
+- For an ESP32: set `ESP32_HOST` (and optionally `ESP32_PORT`, default `80`).
+  See [ESP32_SETUP.md](ESP32_SETUP.md) and the ESPHome guides below.
 
 Optional settings:
 
-- `PLEX_USERS` — comma-separated Plex usernames that trigger the marquee.
-  Leave empty to react to everyone on the server, including shared and home
-  users (the sessions API is server-wide).
+- `MEDIA_USERS` — comma-separated usernames (Plex or Emby) that trigger the
+  marquee. Leave empty to react to everyone on the server, including shared and
+  home users (the sessions API is server-wide). `PLEX_USERS` is still honored as
+  a fallback name.
 - `TMDB_API_KEY`
 - `POLL_SECONDS` default `5`
 - `SERVE_PORT` default `8084`
 - `REPO_DIR` default `/app`
 - `DATA_DIR` default `/config`
 
-Health status is available at `/healthz` and includes the version.
+Health status is available at `/healthz` and includes the version. A read-only
+card-state API is at `/api/now-playing.json` (CORS-enabled) for ESP32/ESPHome/HA.
+
+## Documentation
+
+- **ESP32 / ESPHome displays** — the display polls `/api/now-playing.json` and
+  renders the card itself:
+  - [ESP32_SETUP.md](ESP32_SETUP.md) — hardware and wiring
+  - [docs/ESPHOME/ESPHOME_SETUP.md](docs/ESPHOME/ESPHOME_SETUP.md) and
+    [docs/ESPHOME/ESPHOME_CONFIG.md](docs/ESPHOME/ESPHOME_CONFIG.md) — ESPHome YAML
+  - [esp32/marquee_display.ino](esp32/marquee_display.ino) — reference custom
+    firmware (for tinkerers; hardware-verify before relying on it)
+- **Advanced:**
+  - [docs/ADVANCED/HOMEASSISTANT_INTEGRATION.md](docs/ADVANCED/HOMEASSISTANT_INTEGRATION.md)
+    — optional HA automations (dim-on-play, presence, notifications)
+  - [docs/ADVANCED/MULTIPLE_DISPLAYS.md](docs/ADVANCED/MULTIPLE_DISPLAYS.md)
+    — running several displays
 
 ## Plex Token
 
