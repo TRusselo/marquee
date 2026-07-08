@@ -1,19 +1,20 @@
 /**
  * Marquee Display Firmware for ESP32
- * 
+ *
  * Reference implementation for rendering Marquee card on an ESP32-based display.
  * Communicates with Marquee service via HTTP.
- * 
+ *
  * Requirements:
  * - ESP32 development board
  * - ILI9341 2.8" touchscreen display (or compatible SPI display)
  * - TFT_eSPI library (configure for your display in User_Setup.h)
  * - AsyncTCP + ESPAsyncWebServer for HTTP server
- * 
+ * - ArduinoJson 7 + ESP32 core 3.x
+ *
  * Features:
- * - Polls Marquee server for card URL
- * - Fetches HTML card via HTTP
- * - Renders card using embedded browser-like engine (minimal)
+ * - Polls Marquee server for now-playing.json URL
+ * - Fetches now-playing.json via HTTP and parses it directly
+ * - Renders key fields (title, subtitle, year, summary, progress)
  * - REST API for remote control (brightness, stop, etc.)
  * - Graceful idle/sleep handling
  */
@@ -43,7 +44,7 @@ unsigned long last_fetch_time = 0;
 unsigned long last_activity_time = 0;
 const unsigned long FETCH_INTERVAL = 5000; // Fetch card every 5s
 const unsigned long IDLE_TIMEOUT = 300000; // 5 minutes of inactivity
-int current_brightness = 200;
+int current_brightness_pct = 78;   // 0-100
 bool is_displaying = false;
 bool is_idle = false;
 
@@ -100,9 +101,8 @@ void setup_display() {
   tft.fillScreen(TFT_BLACK);
   
   // Setup brightness PWM
-  ledcSetup(0, 5000, 8); // Channel 0, 5kHz, 8-bit
-  ledcAttachPin(BRIGHTNESS_PIN, 0);
-  set_brightness(current_brightness);
+  ledcAttach(BRIGHTNESS_PIN, 5000, 8);   // pin, freq, resolution (core 3.x)
+  set_brightness(current_brightness_pct);
 }
 
 void setup_wifi() {
@@ -135,7 +135,7 @@ void setup_web_server() {
     doc["status"] = "ok";
     doc["uptime_seconds"] = millis() / 1000;
     doc["displaying"] = is_displaying;
-    doc["brightness"] = current_brightness;
+    doc["brightness"] = current_brightness_pct;
     
     String response;
     serializeJson(doc, response);
@@ -155,7 +155,7 @@ void setup_web_server() {
     request->send(200, "application/json", response);
   });
   
-  // Display endpoint: POST {"card_url": "http://..."}
+  // Display endpoint: POST {"json_url": "http://..."}
   server.onJson("/display", HTTP_POST, [](AsyncWebServerRequest *request, JsonVariant &json) {
     handle_display_request(request, json);
   });
@@ -180,17 +180,15 @@ void handle_display_request(AsyncWebServerRequest *request, JsonVariant &json) {
     return;
   }
   
-  String url = json["card_url"].as<String>();
+  String url = json["json_url"].as<String>();
   if (url.isEmpty()) {
-    request->send(400, "application/json", R"({"error":"missing card_url"})");
+    request->send(400, "application/json", R"({"error":"missing json_url"})");
     return;
   }
-  
-  current_card_url = url;
+  current_card_url = url;   // now points at now-playing.json
   wake_up();
   is_displaying = true;
   last_activity_time = millis();
-  
   render_loading_screen();
   fetch_and_render_card();
   
@@ -224,18 +222,16 @@ void handle_brightness_request(AsyncWebServerRequest *request, JsonVariant &json
   
   DynamicJsonDocument doc(128);
   doc["ok"] = true;
-  doc["brightness"] = current_brightness;
+  doc["brightness"] = current_brightness_pct;
   String response;
   serializeJson(doc, response);
   request->send(200, "application/json", response);
 }
 
 void set_brightness(int percent) {
-  current_brightness = map(constrain(percent, 0, 100), 0, 100, 0, MAX_BRIGHTNESS);
-  ledcWrite(0, current_brightness);
-  Serial.print("Brightness set to: ");
-  Serial.print(percent);
-  Serial.println("%");
+  current_brightness_pct = constrain(percent, 0, 100);
+  ledcWrite(BRIGHTNESS_PIN, map(current_brightness_pct, 0, 100, 0, MAX_BRIGHTNESS));
+  Serial.printf("Brightness: %d%%\n", current_brightness_pct);
 }
 
 void render_loading_screen() {
@@ -276,39 +272,22 @@ void fetch_and_render_card() {
     return;
   }
   
-  String html = http.getString();
+  String body = http.getString();
   http.end();
-  
-  // Simple rendering: extract JSON from HTML, parse, display key fields
-  // A real implementation would:
-  // - Parse HTML/CSS
-  // - Fetch images (poster, backdrop) and cache them
-  // - Render with proper layout, fonts, colors
-  // - Handle touch input if applicable
-  
-  // For now, parse the JSON embedded in the HTML and show basic info
-  int jsonStart = html.indexOf("var nowPlayingData = ");
-  if (jsonStart == -1) {
-    render_loading_screen();
-    return;
-  }
-  
-  jsonStart += 21; // Skip "var nowPlayingData = "
-  int jsonEnd = html.indexOf(";", jsonStart);
-  if (jsonEnd == -1) jsonEnd = html.indexOf("}", jsonStart) + 1;
-  
-  String jsonStr = html.substring(jsonStart, jsonEnd);
-  
-  DynamicJsonDocument doc(2048);
-  DeserializationError error = deserializeJson(doc, jsonStr);
-  
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, body);
   if (error) {
     Serial.print("JSON parse error: ");
     Serial.println(error.c_str());
     render_loading_screen();
     return;
   }
-  
+  if (!doc["playing"].as<bool>()) {
+    go_idle();
+    return;
+  }
+
   // Simple rendering
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -368,6 +347,6 @@ void go_idle() {
 
 void wake_up() {
   is_idle = false;
-  set_brightness(current_brightness);
+  set_brightness(current_brightness_pct);
   Serial.println("Display active");
 }
