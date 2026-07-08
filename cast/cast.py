@@ -523,8 +523,20 @@ def emby_select_session(sessions, users):
     return None
 
 
+_emby_meta_cache = {}    # item Id -> extras dict; current item only (mirrors _meta_cache)
+_emby_enrich_cache = {}  # item Id -> enrichment fields; current item only
+
+
 def emby_extras(item):
-    """Network extras for an Emby item: TMDB stinger + downloaded art."""
+    """TMDB stinger + downloaded art for an Emby item; cached once per item.
+
+    Without this, loop() would re-download poster/backdrop/logo and re-hit TMDB
+    every POLL_SECONDS for the whole runtime — matching the Plex library_extras
+    cache keeps it to one fetch per title.
+    """
+    key = item.get("Id")
+    if key and key in _emby_meta_cache:
+        return _emby_meta_cache[key]
     x = {"stinger": [], "poster": False, "backdrop": False, "logo": False}
     try:
         tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb")
@@ -536,13 +548,48 @@ def emby_extras(item):
         x.update(emby_download_art(item))
     except Exception as e:
         print(f"emby art failed: {e}", flush=True)
+    if key:
+        _emby_meta_cache.clear()  # only ever need the current item
+        _emby_meta_cache[key] = x
     return x
+
+
+def emby_enrich(item):
+    """Fill genres/streams/ids from /Items when /Sessions omitted them.
+
+    Emby's NowPlayingItem field population is server/version dependent; some
+    servers return a bare item. When the display-critical fields are missing we
+    fetch the full record once (cached per title) and merge it in place.
+    """
+    key = item.get("Id")
+    if not key or (item.get("Genres") and item.get("MediaStreams")):
+        return
+    if key not in _emby_enrich_cache:
+        enriched = {}
+        try:
+            fields = ("Genres,MediaStreams,ProviderIds,Overview,"
+                      "OfficialRating,CommunityRating,CriticRating")
+            data = emby_fetch_json(f"/Items?Ids={key}&Fields={fields}")
+            items = data.get("Items") if isinstance(data, dict) else None
+            full = items[0] if items else {}
+            for f in ("Genres", "MediaStreams", "ProviderIds", "Overview",
+                      "OfficialRating", "CommunityRating", "CriticRating"):
+                if not item.get(f) and full.get(f) is not None:
+                    enriched[f] = full[f]
+        except Exception as e:
+            print(f"emby enrich failed: {e}", flush=True)
+        _emby_enrich_cache.clear()  # only ever need the current item
+        _emby_enrich_cache[key] = enriched
+    item.update(_emby_enrich_cache[key])
 
 
 def emby_current_session():
     sessions = emby_fetch_json("/Sessions")
     s = emby_select_session(sessions, USERS)
-    return parse_emby_session(s, extras=emby_extras) if s else None
+    if not s:
+        return None
+    emby_enrich(s.get("NowPlayingItem") or {})
+    return parse_emby_session(s, extras=emby_extras)
 
 
 def load_settings():
