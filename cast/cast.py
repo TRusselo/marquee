@@ -577,12 +577,14 @@ class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def _send(self, body, ctype="text/html; charset=utf-8", code=200):
+    def _send(self, body, ctype="text/html; charset=utf-8", code=200, cors=False):
         data = body if isinstance(body, bytes) else body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        if cors:  # let LAN dashboards / HA fetch the read-only card state
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
 
@@ -603,6 +605,17 @@ class WebHandler(BaseHTTPRequestHandler):
                        "application/json")
         elif path == "/healthz":
             self._send(json.dumps({"ok": True, "version": VERSION}), "application/json")
+        elif path == "/api/now-playing.json":
+            # Intentional read-only API for ESP32/ESPHome/HA consumers (CORS-enabled).
+            try:
+                with open(JSON_PATH) as f:
+                    body = f.read()
+            except Exception:
+                body = json.dumps({"playing": False})
+            self._send(body, "application/json", cors=True)
+        elif path == "/api/healthz":
+            self._send(json.dumps({"ok": True, "version": VERSION}),
+                       "application/json", cors=True)
         elif path == "/release-notes":
             self._send_file(os.path.join(REPO, "CHANGELOG.md"))
         elif path in ("/", "/settings"):
