@@ -44,7 +44,8 @@ unsigned long last_fetch_time = 0;
 unsigned long last_activity_time = 0;
 const unsigned long FETCH_INTERVAL = 5000; // Fetch card every 5s
 const unsigned long IDLE_TIMEOUT = 300000; // 5 minutes of inactivity
-int current_brightness_pct = 78;   // 0-100
+int current_brightness_pct = 78;   // 0-100 (the user's chosen level)
+const int IDLE_BRIGHTNESS_PCT = 20; // dim level while idle (does not overwrite the above)
 bool is_displaying = false;
 bool is_idle = false;
 
@@ -340,7 +341,9 @@ void fetch_and_render_card() {
 
 void go_idle() {
   is_idle = true;
-  set_brightness(20); // Dim the display
+  // Dim the backlight directly, WITHOUT clobbering current_brightness_pct,
+  // so wake_up() can restore the user's chosen level.
+  ledcWrite(BRIGHTNESS_PIN, map(IDLE_BRIGHTNESS_PCT, 0, 100, 0, MAX_BRIGHTNESS));
   render_idle_screen();
   Serial.println("Display idle");
 }
