@@ -467,6 +467,8 @@ def parse_emby_session(session, extras):
     media = " · ".join(p for p in parts if p)
     if media:
         info["media"] = media
+    if play.get("PlayMethod"):
+        info["playMethod"] = play["PlayMethod"].lower()
     scores = {}
     if item.get("CommunityRating"):
         scores["imdb"] = round(float(item["CommunityRating"]), 1)
@@ -530,6 +532,13 @@ def parse_session(video, extras=library_extras):
                  (media.get("videoCodec") or "").upper() or None,
                  (media.get("audioCodec") or "").upper() or None]
         info["media"] = " · ".join(p for p in parts if p)
+    if video.find("TranscodeSession") is not None:
+        info["playMethod"] = "transcode"
+    elif media is not None:
+        part = media.find("Part")
+        decision = part.get("decision") if part is not None else None
+        info["playMethod"] = {"copy": "directstream",
+                              "transcode": "transcode"}.get(decision, "directplay")
     scores = {}
     if "rottentomatoes" in (a("ratingImage") or "") and a("rating"):
         scores["rtCritic"] = round(float(a("rating")) * 10)
@@ -859,7 +868,9 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
   audienceRating="8.4" audienceRatingImage="rottentomatoes://image.rating.upright"
   viewOffset="3600000"
   tagline="She's back, and twice as fierce.">
-  <Media videoResolution="1080" videoCodec="h264" audioCodec="eac3"/>
+  <Media videoResolution="1080" videoCodec="h264" audioCodec="eac3">
+    <Part decision="directplay"/>
+  </Media>
   <Player state="paused"/></Video>"""
 
 SAMPLE_EXTRAS = {"genres": ["Comedy", "Drama"], "imdb": 7.2, "stinger": ["after"],
@@ -880,7 +891,8 @@ SAMPLE_EMBY_SESSION = {
             {"Type": "Audio", "Codec": "eac3"},
         ],
     },
-    "PlayState": {"PositionTicks": 36000000000, "IsPaused": True},
+    "PlayState": {"PositionTicks": 36000000000, "IsPaused": True,
+                  "PlayMethod": "DirectStream"},
 }
 SAMPLE_EMBY_EXTRAS = {"stinger": ["after"],
                       "poster": True, "backdrop": True, "logo": True}
@@ -897,6 +909,7 @@ def selftest():
     assert info["scores"] == {"rtCritic": 77, "rtCriticFresh": True,
                               "rtAudience": 84, "rtAudienceFresh": True, "imdb": 7.2}
     assert info["genres"] == ["Comedy", "Drama"]
+    assert info["playMethod"] == "directplay"
     assert info["tagline"] == "She's back, and twice as fierce."
     assert info["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert info["state"] == "paused"
@@ -949,6 +962,7 @@ def selftest():
     assert einfo["state"] == "paused"
     assert einfo["runtime"] == "1h 59m"
     assert einfo["media"] == "1080p · H264 · EAC3"
+    assert einfo["playMethod"] == "directstream"
     assert einfo["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert einfo["genres"] == ["Comedy", "Drama"]
     assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
