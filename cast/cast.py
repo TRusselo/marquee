@@ -371,13 +371,16 @@ def library_extras(rating_key, is_movie=False):
     """Genres, IMDb, stinger, art/logo from the full metadata record; cached per item."""
     if rating_key in _meta_cache:
         return _meta_cache[rating_key]
-    x = {"genres": [], "imdb": None, "stinger": [],
+    x = {"genres": [], "imdb": None, "stinger": [], "chapters": [],
          "poster": False, "backdrop": False, "logo": False}
     try:
-        root = fetch_xml(f"/library/metadata/{rating_key}?includeRatings=1")
+        root = fetch_xml(f"/library/metadata/{rating_key}?includeRatings=1&includeChapters=1")
         item = root.find("./*")
         if item is not None:
             x["genres"] = [g.get("tag") for g in item.findall("Genre") if g.get("tag")]
+            x["chapters"] = [int(c.get("startTimeOffset"))
+                             for c in item.findall("Chapter")
+                             if c.get("startTimeOffset") is not None]
             for r in item.findall("Rating"):
                 if (r.get("image") or "").startswith("imdb://") and r.get("value"):
                     x["imdb"] = float(r.get("value"))
@@ -488,6 +491,11 @@ def parse_emby_session(session, extras):
         scores["rtCriticFresh"] = float(item["CriticRating"]) >= 60
     if scores:
         info["scores"] = scores
+    chapters = [emby_ticks_to_ms(c.get("StartPositionTicks"))
+                for c in (item.get("Chapters") or [])]
+    chapters = [c for c in chapters if c is not None]
+    if chapters:
+        info["chapters"] = chapters
     x = extras(item)
     if x.get("stinger"):
         info["stinger"] = x["stinger"]
@@ -532,6 +540,8 @@ def parse_session(video, extras=library_extras):
     info["poster"] = x["poster"]
     info["backdrop"] = x["backdrop"]
     info["logo"] = x["logo"]
+    if x.get("chapters"):
+        info["chapters"] = x["chapters"]
     if a("contentRating"):
         info["contentRating"] = a("contentRating")
     if a("duration"):
@@ -898,7 +908,8 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
   <Player state="paused"/></Video>"""
 
 SAMPLE_EXTRAS = {"genres": ["Comedy", "Drama"], "imdb": 7.2, "stinger": ["after"],
-                 "poster": True, "backdrop": True, "logo": True}
+                 "poster": True, "backdrop": True, "logo": True,
+                 "chapters": [0, 300000, 600000]}
 
 SAMPLE_EMBY_SESSION = {
     "UserName": "Alice",
@@ -916,6 +927,11 @@ SAMPLE_EMBY_SESSION = {
             {"Type": "Audio", "Codec": "eac3", "Index": 1,
              "DisplayTitle": "English EAC3 5.1 (Default)"},
             {"Type": "Subtitle", "Index": 2, "DisplayTitle": "English (SRT)"},
+        ],
+        "Chapters": [
+            {"StartPositionTicks": 0, "Name": "Chapter 1"},
+            {"StartPositionTicks": 3000000000, "Name": "Chapter 2"},
+            {"StartPositionTicks": 6000000000, "Name": "Chapter 3"},
         ],
     },
     "PlayState": {"PositionTicks": 36000000000, "IsPaused": True,
@@ -940,6 +956,7 @@ def selftest():
     assert info["playMethod"] == "directplay"
     assert info["audioTrack"] == "English (EAC3 5.1)"
     assert info["subtitleTrack"] == "English (SRT)"
+    assert info["chapters"] == [0, 300000, 600000]
     assert info["tagline"] == "She's back, and twice as fierce."
     assert info["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert info["state"] == "paused"
@@ -995,6 +1012,7 @@ def selftest():
     assert einfo["playMethod"] == "directstream"
     assert einfo["audioTrack"] == "English EAC3 5.1 (Default)"
     assert einfo["subtitleTrack"] == "English (SRT)"
+    assert einfo["chapters"] == [0, 300000, 600000]
     assert einfo["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert einfo["genres"] == ["Comedy", "Drama"]
     assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
