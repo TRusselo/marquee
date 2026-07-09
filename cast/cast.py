@@ -838,6 +838,42 @@ def emby_current_session():
     return parse_emby_session(s, extras=emby_extras)
 
 
+def migrate_settings(raw):
+    """Normalize any saved settings into the profile schema.
+
+    Accepts the legacy flat object (appearance keys at top level), the current
+    profile schema, or junk. Idempotent: migrating twice changes nothing.
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+    out = {"default": "cast"}
+    for k in GLOBAL_KEYS[1:]:                     # hubIp, plexUsers, plexDevices
+        value = raw.get(k, "")
+        out[k] = value if isinstance(value, str) else ""
+    if raw.get("default") in PROFILES:
+        out["default"] = raw["default"]
+
+    saved = raw.get("profiles")
+    saved = saved if isinstance(saved, dict) else {}
+    # legacy flat appearance keys become the cast profile's starting point
+    legacy = {k: v for k, v in raw.items()
+              if k not in GLOBAL_KEYS and k != "profiles"}
+
+    out["profiles"] = {}
+    for name, seed in (("cast", profile_defaults("full")),
+                       ("esp", profile_defaults("compact",
+                                                orientation="portrait",
+                                                template="onesheet"))):
+        profile = dict(seed)
+        source = saved.get(name)
+        if isinstance(source, dict):
+            profile.update({k: v for k, v in source.items() if k in seed})
+        elif name == "cast":
+            profile.update({k: v for k, v in legacy.items() if k in seed})
+        out["profiles"][name] = profile
+    return out
+
+
 def load_settings():
     try:
         with open(SETTINGS_PATH) as f:
@@ -1266,6 +1302,32 @@ def selftest():
     assert profile_defaults("compact")["showTagline"] is False
     assert profile_defaults("minimal")["showProgress"] is True   # always-on element
     assert profile_defaults("full")["orientation"] == "auto"
+
+    # legacy flat settings migrate into profiles.cast; globals lift to top level
+    legacy = {"hubIp": "10.0.0.5", "plexUsers": "alice", "plexDevices": "tv",
+              "template": "street", "theme": "concrete", "showPlot": False,
+              "blockLayout": {"identity": {"x": 5}}}
+    mig = migrate_settings(legacy)
+    assert mig["default"] == "cast"
+    assert mig["hubIp"] == "10.0.0.5" and mig["plexUsers"] == "alice"
+    assert mig["profiles"]["cast"]["template"] == "street"
+    assert mig["profiles"]["cast"]["theme"] == "concrete"
+    assert mig["profiles"]["cast"]["showPlot"] is False
+    assert mig["profiles"]["cast"]["blockLayout"] == {"identity": {"x": 5}}
+    assert mig["profiles"]["cast"]["density"] == "full"
+    # esp is seeded compact + portrait + onesheet, and does NOT inherit cast's theme
+    assert mig["profiles"]["esp"]["density"] == "compact"
+    assert mig["profiles"]["esp"]["orientation"] == "portrait"
+    assert mig["profiles"]["esp"]["template"] == "onesheet"
+    assert mig["profiles"]["esp"]["showCast"] is False
+    # globals do not leak into profiles
+    assert "hubIp" not in mig["profiles"]["cast"]
+    # migrating an already-migrated dict is a no-op
+    assert migrate_settings(mig) == mig
+    # junk in, defaults out
+    assert migrate_settings({})["profiles"]["cast"]["template"] == "spotlight"
+    assert migrate_settings("not a dict")["default"] == "cast"
+
     print("selftest ok")
 
 
