@@ -371,7 +371,7 @@ def library_extras(rating_key, is_movie=False):
     """Genres, IMDb, stinger, art/logo from the full metadata record; cached per item."""
     if rating_key in _meta_cache:
         return _meta_cache[rating_key]
-    x = {"genres": [], "imdb": None, "stinger": [], "chapters": [],
+    x = {"genres": [], "imdb": None, "stinger": [], "chapters": [], "cast": [],
          "poster": False, "backdrop": False, "logo": False}
     try:
         root = fetch_xml(f"/library/metadata/{rating_key}?includeRatings=1&includeChapters=1")
@@ -381,6 +381,9 @@ def library_extras(rating_key, is_movie=False):
             x["chapters"] = [int(c.get("startTimeOffset"))
                              for c in item.findall("Chapter")
                              if c.get("startTimeOffset") is not None]
+            x["cast"] = [{"name": r.get("tag"), "role": r.get("role") or "",
+                          "thumb": bool(r.get("thumb"))}
+                         for r in item.findall("Role")[:6] if r.get("tag")]
             for r in item.findall("Rating"):
                 if (r.get("image") or "").startswith("imdb://") and r.get("value"):
                     x["imdb"] = float(r.get("value"))
@@ -501,6 +504,12 @@ def parse_emby_session(session, extras):
         info["watched"] = bool(ud.get("Played"))   # NOT PlayCount — verified
     if "IsFavorite" in ud:
         info["favorite"] = bool(ud.get("IsFavorite"))
+    people = [p for p in (item.get("People") or []) if p.get("Type") == "Actor"]
+    cast = [{"name": p.get("Name"), "role": p.get("Role") or "",
+             "thumb": bool(p.get("PrimaryImageTag"))}
+            for p in people[:6] if p.get("Name")]
+    if cast:
+        info["cast"] = cast
     x = extras(item)
     if x.get("stinger"):
         info["stinger"] = x["stinger"]
@@ -549,6 +558,8 @@ def parse_session(video, extras=library_extras):
     info["logo"] = x["logo"]
     if x.get("chapters"):
         info["chapters"] = x["chapters"]
+    if x.get("cast"):
+        info["cast"] = x["cast"]
     if a("contentRating"):
         info["contentRating"] = a("contentRating")
     if a("duration"):
@@ -915,7 +926,9 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
 
 SAMPLE_EXTRAS = {"genres": ["Comedy", "Drama"], "imdb": 7.2, "stinger": ["after"],
                  "poster": True, "backdrop": True, "logo": True,
-                 "chapters": [0, 300000, 600000]}
+                 "chapters": [0, 300000, 600000],
+                 "cast": [{"name": "Bill Skarsgard", "role": "Eddie", "thumb": True},
+                          {"name": "Anthony Hopkins", "role": "William", "thumb": True}]}
 
 SAMPLE_EMBY_SESSION = {
     "UserName": "Alice",
@@ -939,6 +952,13 @@ SAMPLE_EMBY_SESSION = {
             {"StartPositionTicks": 0, "Name": "Chapter 1"},
             {"StartPositionTicks": 3000000000, "Name": "Chapter 2"},
             {"StartPositionTicks": 6000000000, "Name": "Chapter 3"},
+        ],
+        "People": [
+            {"Name": "Bill Skarsgard", "Role": "Eddie", "Type": "Actor",
+             "Id": "10", "PrimaryImageTag": "aaa"},
+            {"Name": "Anthony Hopkins", "Role": "William", "Type": "Actor",
+             "Id": "11", "PrimaryImageTag": "bbb"},
+            {"Name": "A Director", "Role": "", "Type": "Director", "Id": "12"},
         ],
     },
     "PlayState": {"PositionTicks": 36000000000, "IsPaused": True,
@@ -967,6 +987,7 @@ def selftest():
     assert info["tagline"] == "She's back, and twice as fierce."
     assert info["watched"] is True
     assert "favorite" not in info   # Plex has no favorite concept
+    assert [c["name"] for c in info["cast"]] == ["Bill Skarsgard", "Anthony Hopkins"]
     assert info["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert info["state"] == "paused"
     assert info["stinger"] == ["after"]
@@ -1029,6 +1050,8 @@ def selftest():
     assert einfo["poster"] and einfo["backdrop"] and einfo["logo"]
     assert einfo["tagline"] == "She's back, and twice as fierce."
     assert einfo["watched"] is True and einfo["favorite"] is True
+    assert [c["name"] for c in einfo["cast"]] == ["Bill Skarsgard", "Anthony Hopkins"]
+    assert einfo["cast"][0]["role"] == "Eddie"
     # episode shape
     eep = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
     eep["NowPlayingItem"].update(Type="Episode", SeriesName="Severance",
