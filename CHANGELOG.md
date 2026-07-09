@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Card enrichment — data layer
+
+`now-playing.json` (and `/api/now-playing.json`) now carry, from **both** the
+Plex and Emby backends: `tagline`, `playMethod` (direct play / direct stream /
+transcode), the `audioTrack` and `subtitleTrack` actually playing, `chapters`
+(ms offsets), `watched`, `favorite` (Emby only — Plex has no such concept), and
+a `cast` list of top-billed actors whose headshots are saved to
+`output/cast/N.jpg`, index-aligned with the list.
+
+Emby pulls `UserData` and `People` from one cached `/Items?Ids=…&UserId=…` call,
+since `/Sessions` never returns them; a truthy-but-partial `UserData` from
+`/Sessions` now merges rather than being skipped. `watched` reads
+`UserData.Played`, not `PlayCount` — a re-watched title reports `Played: true`
+with `PlayCount: 0`. Plex takes `cast`/`chapters` from the existing metadata
+fetch (`includeChapters=1`).
+
+Emby resolution is now labeled by frame **width**, so letterboxed scope films
+(e.g. 1920×696) read as `1080p` instead of `696p`.
+
+The card page does not render these fields yet — that lands with the layout work.
+
+### Notes
+
+- `MEDIA_DEVICES` joins `MEDIA_USERS` (with `PLEX_DEVICES`/`PLEX_USERS` as
+  fallbacks). Device filtering applies to the Plex path only for now.
+- Merged upstream v1.4.0 (session filters, Street template, Vibes, weather).
+
 ## 1.4.0 — 2026-07-08
 
 ### Session filters

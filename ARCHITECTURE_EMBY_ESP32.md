@@ -41,6 +41,26 @@ Keys: `playing`, `type` (`movie`/`episode`), `key`, `title`, `year`,
 (`imdb`, `rtCritic`, `rtCriticFresh`; Plex also has `rtAudience`/`rtAudienceFresh`),
 `stinger`, and `poster`/`backdrop`/`logo` booleans.
 
+**Enrichment keys** (both backends, unless noted):
+
+| Key | Type | Notes |
+|---|---|---|
+| `tagline` | string | Emby `Taglines[0]`; Plex `tagline` |
+| `playMethod` | `directplay`/`directstream`/`transcode` | how the stream is being served |
+| `audioTrack`, `subtitleTrack` | string | the track *actually playing*; omitted when none is active |
+| `chapters` | list of ms offsets | omitted when the file/library has none |
+| `watched` | bool | Emby `UserData.Played` (**not** `PlayCount`); Plex `viewCount > 0` |
+| `favorite` | bool | **Emby only** — Plex has no per-item favorite, so the key is omitted |
+| `cast` | list of `{name, role, thumb}` | top-billed actors (max 6); headshots saved to `output/cast/N.jpg`, index-aligned with this list |
+
+Emby fetches `UserData` and `People` from a single cached `/Items?Ids=…&UserId=…`
+call, because `/Sessions` never returns them. Plex gets `cast` and `chapters`
+from the existing metadata fetch (`includeChapters=1`).
+
+> These keys are **emitted** by both parsers today. Rendering them on the card
+> (badges, cast strip, chapter ticks) is a separate later change — the JSON and
+> `/api/now-playing.json` carry them now; `output/index.html` does not yet draw them.
+
 ## Backend seam (`MEDIA_BACKEND=plex|emby`)
 
 `get_session()` dispatches to the selected backend; both return the contract dict:

@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Marquee — a Plex "now playing" marquee for Google Nest Hubs.
+"""Marquee — a "now playing" marquee for Google Cast displays and ESP32 panels.
 The whole app in one container: front end + back end.
 
-Backend: polls Plex every POLL_SECONDS; while something plays it downloads
-poster/backdrop/logo, writes now-playing.json, and casts the card to the Hub;
-when idle it releases the Hub.
+Backend: polls the media server every POLL_SECONDS; while something plays it
+downloads poster/backdrop/logo/cast headshots, writes now-playing.json, and
+shows the card on the display; when idle it releases the display.
+
+Two seams, each chosen by env and each defaulting to the original behavior:
+  MEDIA_BACKEND=plex|emby   -> get_session()  -> current_session() / emby_current_session()
+  CAST_TARGET=nest|esp32    -> device_show()  -> catt cast_site / HTTP POST
 
 Frontend (one HTTP server on :8084): serves the card page and art from
-output/, the settings UI at /settings, /save, and /release-notes.
+output/, the settings UI at /settings, /save, /release-notes, and a read-only
+CORS API at /api/now-playing.json and /api/healthz.
 
-Env knobs: PAGE_URL, PLEX_HOST, PLEX_TOKEN, POLL_SECONDS, REPO_DIR,
-SERVE_PORT, DATA_DIR. Optional TMDB_API_KEY enables the credits-scene badge;
-optional PLEX_USERS / PLEX_DEVICES limit which Plex users and player devices
-trigger the marquee (also editable live on the settings page). The cast
-device comes from the settings page (auto-discovered via catt scan) or the
-HUB_IP env fallback.
+Env knobs: PAGE_URL, POLL_SECONDS, REPO_DIR, SERVE_PORT, DATA_DIR.
+  Plex:  PLEX_HOST, PLEX_TOKEN
+  Emby:  EMBY_HOST, EMBY_API_KEY
+  Nest:  HUB_IP (or pick a device on the settings page via catt scan)
+  ESP32: ESP32_HOST, ESP32_PORT
+Optional TMDB_API_KEY enables the credits-scene badge. Optional MEDIA_USERS /
+MEDIA_DEVICES (PLEX_USERS / PLEX_DEVICES honored as fallbacks) limit which
+users and player devices trigger the marquee; both are also editable live on
+the settings page. Device filtering currently applies to the Plex path only.
 """
 import json
 import mimetypes

@@ -125,6 +125,11 @@ Optional settings:
   marquee. Leave empty to react to everyone on the server, including shared and
   home users (the sessions API is server-wide). `PLEX_USERS` is still honored as
   a fallback name.
+- `MEDIA_DEVICES` — comma-separated player/device names that may trigger the
+  marquee (e.g. `Living Room TV`); empty means any device. `PLEX_DEVICES` is
+  honored as a fallback name. Both lists are also editable live on the settings
+  page under "Who triggers the marquee." **Device filtering currently applies to
+  the Plex backend only**; the Emby path filters by user.
 - `TMDB_API_KEY`
 - `POLL_SECONDS` default `5`
 - `SERVE_PORT` default `8084`
