@@ -496,6 +496,11 @@ def parse_emby_session(session, extras):
     chapters = [c for c in chapters if c is not None]
     if chapters:
         info["chapters"] = chapters
+    ud = item.get("UserData") or {}
+    if "Played" in ud:
+        info["watched"] = bool(ud.get("Played"))   # NOT PlayCount — verified
+    if "IsFavorite" in ud:
+        info["favorite"] = bool(ud.get("IsFavorite"))
     x = extras(item)
     if x.get("stinger"):
         info["stinger"] = x["stinger"]
@@ -533,6 +538,8 @@ def parse_session(video, extras=library_extras):
         info["summary"] = a("summary")
     if a("tagline"):
         info["tagline"] = a("tagline")
+    if a("viewCount") is not None:
+        info["watched"] = int(a("viewCount") or 0) > 0
     if x["genres"]:
         info["genres"] = x["genres"][:3]
     if x["stinger"]:
@@ -896,7 +903,7 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
   summary="Miranda returns." contentRating="PG-13" duration="7141120" ratingKey="79372"
   rating="7.7" ratingImage="rottentomatoes://image.rating.ripe"
   audienceRating="8.4" audienceRatingImage="rottentomatoes://image.rating.upright"
-  viewOffset="3600000"
+  viewOffset="3600000" viewCount="2"
   tagline="She's back, and twice as fierce.">
   <Media videoResolution="1080" videoCodec="h264" audioCodec="eac3">
     <Part decision="directplay">
@@ -920,6 +927,7 @@ SAMPLE_EMBY_SESSION = {
         "Genres": ["Comedy", "Drama"], "Id": "79372",
         "ProviderIds": {"Tmdb": "12345", "Imdb": "tt1234567"},
         "CommunityRating": 7.2, "CriticRating": 77,
+        "UserData": {"Played": True, "IsFavorite": True, "PlayCount": 0},
         "MediaStreams": [
             {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920,
              "Index": 0, "DisplayTitle": "1080p H264"},
@@ -957,6 +965,8 @@ def selftest():
     assert info["subtitleTrack"] == "English (SRT)"
     assert info["chapters"] == [0, 300000, 600000]
     assert info["tagline"] == "She's back, and twice as fierce."
+    assert info["watched"] is True
+    assert "favorite" not in info   # Plex has no favorite concept
     assert info["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert info["state"] == "paused"
     assert info["stinger"] == ["after"]
@@ -1018,6 +1028,7 @@ def selftest():
     assert einfo["stinger"] == ["after"]
     assert einfo["poster"] and einfo["backdrop"] and einfo["logo"]
     assert einfo["tagline"] == "She's back, and twice as fierce."
+    assert einfo["watched"] is True and einfo["favorite"] is True
     # episode shape
     eep = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
     eep["NowPlayingItem"].update(Type="Episode", SeriesName="Severance",
