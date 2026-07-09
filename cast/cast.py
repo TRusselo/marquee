@@ -368,11 +368,25 @@ def emby_ticks_to_ms(ticks):
     return int(ticks) // 10000 if ticks is not None else None
 
 
-def emby_resolution(height):
-    if not height:
-        return None
-    return {2160: "4K", 1080: "1080p", 720: "720p", 480: "480p"}.get(
-        int(height), f"{int(height)}p")
+def emby_resolution(width, height=None):
+    """Label resolution by frame Width. Height is unreliable for
+    letterboxed/scope films (a 1080p 2.76:1 movie is 1920x696, which by
+    height would mislabel as "696p"). Width tracks the resolution tier."""
+    w = int(width) if width else 0
+    if w >= 3800:
+        return "4K"
+    if w >= 2500:
+        return "1440p"
+    if w >= 1800:
+        return "1080p"
+    if w >= 1200:
+        return "720p"
+    if w >= 700:
+        return "480p"
+    if height:  # width missing/odd -> fall back to height buckets
+        return {2160: "4K", 1080: "1080p", 720: "720p", 480: "480p"}.get(
+            int(height), f"{int(height)}p")
+    return f"{w}px" if w else None
 
 
 def parse_emby_session(session, extras):
@@ -408,7 +422,7 @@ def parse_emby_session(session, extras):
     streams = item.get("MediaStreams") or []
     video = next((s for s in streams if s.get("Type") == "Video"), None)
     audio = next((s for s in streams if s.get("Type") == "Audio"), None)
-    parts = [emby_resolution(video.get("Height")) if video else None,
+    parts = [emby_resolution(video.get("Width"), video.get("Height")) if video else None,
              (video.get("Codec") or "").upper() or None if video else None,
              (audio.get("Codec") or "").upper() or None if audio else None]
     media = " · ".join(p for p in parts if p)
@@ -851,6 +865,19 @@ def selftest():
     einfo = parse_emby_session(eep, extras=lambda item: dict(SAMPLE_EMBY_EXTRAS, stinger=[]))
     assert einfo["title"] == "Severance"
     assert einfo["subtitle"] == "S2 · E5 · The Rundown"
+    # resolution is labeled by Width, not Height (scope/letterboxed films)
+    assert emby_resolution(1920, 1080) == "1080p"
+    assert emby_resolution(1920, 696) == "1080p"   # 2.76:1 scope film
+    assert emby_resolution(3840, 1600) == "4K"     # 2.40:1 UHD
+    assert emby_resolution(1280, 720) == "720p"
+    assert emby_resolution(None, 1080) == "1080p"  # width missing -> height fallback
+    assert emby_resolution(None, None) is None
+    scope = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
+    scope["NowPlayingItem"]["MediaStreams"] = [
+        {"Type": "Video", "Codec": "h264", "Height": 696, "Width": 1920},
+        {"Type": "Audio", "Codec": "aac"}]
+    sinfo = parse_emby_session(scope, extras=lambda item: SAMPLE_EMBY_EXTRAS)
+    assert sinfo["media"] == "1080p · H264 · AAC"
     assert emby_image_url("http://emby:8096", "KEY", "79372", "Primary") == (
         "http://emby:8096/Items/79372/Images/Primary"
         "?maxWidth=600&maxHeight=900&api_key=KEY")
