@@ -1074,6 +1074,17 @@ def selftest():
     assert einfo["watched"] is True and einfo["favorite"] is True
     assert [c["name"] for c in einfo["cast"]] == ["Bill Skarsgard", "Anthony Hopkins"]
     assert einfo["cast"][0]["role"] == "Eddie"
+    # the full enriched contract the card page and /api consumers rely on
+    contract_keys = {"playing", "type", "key", "title", "year", "state",
+                     "progress", "runtime", "summary", "contentRating", "genres",
+                     "media", "scores", "poster", "backdrop", "logo",
+                     "tagline", "playMethod", "audioTrack", "subtitleTrack",
+                     "chapters", "watched", "favorite", "cast"}
+    assert contract_keys.issubset(einfo), contract_keys - set(einfo)
+    # Plex emits the same contract minus favorite (no such concept in Plex)
+    minfo = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
+    assert (contract_keys - {"favorite"}).issubset(minfo), \
+        (contract_keys - {"favorite"}) - set(minfo)
     # episode shape
     eep = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
     eep["NowPlayingItem"].update(Type="Episode", SeriesName="Severance",
