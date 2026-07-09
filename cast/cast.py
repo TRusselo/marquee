@@ -469,6 +469,17 @@ def parse_emby_session(session, extras):
         info["media"] = media
     if play.get("PlayMethod"):
         info["playMethod"] = play["PlayMethod"].lower()
+    def _emby_stream(idx):
+        if idx is None:
+            return None
+        s = next((m for m in streams if m.get("Index") == idx), None)
+        return s.get("DisplayTitle") if s else None
+    audio_track = _emby_stream(play.get("AudioStreamIndex"))
+    subtitle_track = _emby_stream(play.get("SubtitleStreamIndex"))
+    if audio_track:
+        info["audioTrack"] = audio_track
+    if subtitle_track:
+        info["subtitleTrack"] = subtitle_track
     scores = {}
     if item.get("CommunityRating"):
         scores["imdb"] = round(float(item["CommunityRating"]), 1)
@@ -539,6 +550,16 @@ def parse_session(video, extras=library_extras):
         decision = part.get("decision") if part is not None else None
         info["playMethod"] = {"copy": "directstream",
                               "transcode": "transcode"}.get(decision, "directplay")
+    part = media.find("Part") if media is not None else None
+    if part is not None:
+        for stream in part.findall("Stream"):
+            if stream.get("selected") != "1":
+                continue
+            label = stream.get("displayTitle") or stream.get("extendedDisplayTitle")
+            if stream.get("streamType") == "2" and label:
+                info["audioTrack"] = label
+            elif stream.get("streamType") == "3" and label:
+                info["subtitleTrack"] = label
     scores = {}
     if "rottentomatoes" in (a("ratingImage") or "") and a("rating"):
         scores["rtCritic"] = round(float(a("rating")) * 10)
@@ -869,7 +890,10 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
   viewOffset="3600000"
   tagline="She's back, and twice as fierce.">
   <Media videoResolution="1080" videoCodec="h264" audioCodec="eac3">
-    <Part decision="directplay"/>
+    <Part decision="directplay">
+      <Stream streamType="2" selected="1" displayTitle="English (EAC3 5.1)"/>
+      <Stream streamType="3" selected="1" displayTitle="English (SRT)"/>
+    </Part>
   </Media>
   <Player state="paused"/></Video>"""
 
@@ -887,12 +911,16 @@ SAMPLE_EMBY_SESSION = {
         "ProviderIds": {"Tmdb": "12345", "Imdb": "tt1234567"},
         "CommunityRating": 7.2, "CriticRating": 77,
         "MediaStreams": [
-            {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920},
-            {"Type": "Audio", "Codec": "eac3"},
+            {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920,
+             "Index": 0, "DisplayTitle": "1080p H264"},
+            {"Type": "Audio", "Codec": "eac3", "Index": 1,
+             "DisplayTitle": "English EAC3 5.1 (Default)"},
+            {"Type": "Subtitle", "Index": 2, "DisplayTitle": "English (SRT)"},
         ],
     },
     "PlayState": {"PositionTicks": 36000000000, "IsPaused": True,
-                  "PlayMethod": "DirectStream"},
+                  "PlayMethod": "DirectStream",
+                  "AudioStreamIndex": 1, "SubtitleStreamIndex": 2},
 }
 SAMPLE_EMBY_EXTRAS = {"stinger": ["after"],
                       "poster": True, "backdrop": True, "logo": True}
@@ -910,6 +938,8 @@ def selftest():
                               "rtAudience": 84, "rtAudienceFresh": True, "imdb": 7.2}
     assert info["genres"] == ["Comedy", "Drama"]
     assert info["playMethod"] == "directplay"
+    assert info["audioTrack"] == "English (EAC3 5.1)"
+    assert info["subtitleTrack"] == "English (SRT)"
     assert info["tagline"] == "She's back, and twice as fierce."
     assert info["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert info["state"] == "paused"
@@ -963,6 +993,8 @@ def selftest():
     assert einfo["runtime"] == "1h 59m"
     assert einfo["media"] == "1080p · H264 · EAC3"
     assert einfo["playMethod"] == "directstream"
+    assert einfo["audioTrack"] == "English EAC3 5.1 (Default)"
+    assert einfo["subtitleTrack"] == "English (SRT)"
     assert einfo["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert einfo["genres"] == ["Comedy", "Drama"]
     assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
