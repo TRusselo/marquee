@@ -74,7 +74,8 @@ SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
 THEMES = ("amber", "ice", "crimson", "emerald",
           "campaign", "concrete", "trophy", "bsides")
-TEMPLATES = ("spotlight", "split", "hero", "lowerthird", "bigclock", "street")
+TEMPLATES = ("spotlight", "split", "hero", "lowerthird", "bigclock", "street",
+             "onesheet")
 TITLE_FONTS = ("system", "bebas", "oswald", "playfair", "cinzel", "grotesk")
 ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
@@ -100,6 +101,53 @@ EDITABLE_BLOCKS = ("clock", "identity", "meta", "plot", "ratings",
 
 CAST_MAX = 6            # top-billed actors shown on the card
 HEADSHOT_PX = (150, 150)
+
+PROFILES = ("cast", "esp")            # one Cast/Nest display, one ESP panel
+GLOBAL_KEYS = ("default", "hubIp", "plexUsers", "plexDevices")
+DENSITIES = ("full", "compact", "minimal", "custom")
+ORIENTATIONS = ("auto", "landscape", "portrait")
+
+# Elements a density preset controls. Poster/title/year/contentRating/progress
+# are always on, so they are not listed here.
+DENSITY_PRESETS = {
+    "full": {"showPlot": True, "showGenres": True, "showScores": True,
+             "showMediaInfo": True, "showRuntime": True, "showClock": True,
+             "showTagline": True, "showBadges": True, "showPlayMethod": True,
+             "showTracks": True, "showCast": True, "showChapters": True},
+    "compact": {"showPlot": True, "showGenres": True, "showScores": True,
+                "showMediaInfo": True, "showRuntime": True, "showClock": True,
+                "showTagline": False, "showBadges": False, "showPlayMethod": True,
+                "showTracks": False, "showCast": False, "showChapters": False},
+    "minimal": {"showPlot": False, "showGenres": False, "showScores": False,
+                "showMediaInfo": False, "showRuntime": False, "showClock": False,
+                "showTagline": False, "showBadges": False, "showPlayMethod": False,
+                "showTracks": False, "showCast": False, "showChapters": False},
+}
+
+# Appearance keys that live inside a profile (everything not in GLOBAL_KEYS).
+PROFILE_BASE = {
+    "template": "spotlight",
+    "theme": "amber",
+    "accent": "",
+    "titleFont": "system",
+    "posterSide": "right",
+    "clockFormat": "12h",
+    "clockSeconds": False,
+    "showContentRating": True, "showProgress": True,
+    "backdrop": True, "logo": True,
+    "blockLayout": {},
+    "density": "full",
+    "orientation": "auto",
+}
+
+
+def profile_defaults(density="full", **overrides):
+    """A complete profile: always-on elements + the density preset + overrides."""
+    p = dict(PROFILE_BASE)
+    p.update(DENSITY_PRESETS.get(density, DENSITY_PRESETS["full"]))
+    p["density"] = density if density in DENSITIES else "full"
+    p.update(overrides)
+    return p
 
 _meta_cache = {}  # ratingKey -> extras dict
 
@@ -1206,6 +1254,18 @@ def selftest():
     # The card's JSON url derived from PAGE_URL's origin
     assert esp32_json_url("http://192.168.1.10:8084/image") == \
         "http://192.168.1.10:8084/now-playing.json"
+    assert "onesheet" in TEMPLATES
+    assert set(PROFILES) == {"cast", "esp"}
+    assert GLOBAL_KEYS == ("default", "hubIp", "plexUsers", "plexDevices")
+    assert set(DENSITY_PRESETS) == {"full", "compact", "minimal"}
+    assert DENSITY_PRESETS["full"]["showCast"] is True
+    assert DENSITY_PRESETS["compact"]["showCast"] is False
+    assert DENSITY_PRESETS["compact"]["showPlayMethod"] is True
+    assert DENSITY_PRESETS["minimal"]["showPlot"] is False
+    assert profile_defaults("full")["density"] == "full"
+    assert profile_defaults("compact")["showTagline"] is False
+    assert profile_defaults("minimal")["showProgress"] is True   # always-on element
+    assert profile_defaults("full")["orientation"] == "auto"
     print("selftest ok")
 
 
