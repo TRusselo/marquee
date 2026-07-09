@@ -685,26 +685,24 @@ def emby_extras(item):
     return x
 
 
-def emby_enrich(item):
-    """Fill genres/streams/ids from /Items when /Sessions omitted them.
-
-    Emby's NowPlayingItem field population is server/version dependent; some
-    servers return a bare item. When the display-critical fields are missing we
-    fetch the full record once (cached per title) and merge it in place.
-    """
+def emby_enrich(item, user_id=None):
+    """Fetch the fields /Sessions omits (People, UserData, and any missing
+    genres/streams) from /Items once per title, cached, and merge in place."""
     key = item.get("Id")
-    if not key or (item.get("Genres") and item.get("MediaStreams")):
+    if not key:
         return
     if key not in _emby_enrich_cache:
         enriched = {}
         try:
-            fields = ("Genres,MediaStreams,ProviderIds,Overview,"
-                      "OfficialRating,CommunityRating,CriticRating")
-            data = emby_fetch_json(f"/Items?Ids={key}&Fields={fields}")
+            fields = ("Genres,MediaStreams,ProviderIds,Overview,OfficialRating,"
+                      "CommunityRating,CriticRating,People,UserData,Taglines,Chapters")
+            uid = f"&UserId={user_id}" if user_id else ""
+            data = emby_fetch_json(f"/Items?Ids={key}{uid}&Fields={fields}")
             items = data.get("Items") if isinstance(data, dict) else None
             full = items[0] if items else {}
             for f in ("Genres", "MediaStreams", "ProviderIds", "Overview",
-                      "OfficialRating", "CommunityRating", "CriticRating"):
+                      "OfficialRating", "CommunityRating", "CriticRating",
+                      "People", "UserData", "Taglines", "Chapters"):
                 if not item.get(f) and full.get(f) is not None:
                     enriched[f] = full[f]
         except Exception as e:
@@ -719,7 +717,8 @@ def emby_current_session():
     s = emby_select_session(sessions, USERS)
     if not s:
         return None
-    emby_enrich(s.get("NowPlayingItem") or {})
+    item = s.get("NowPlayingItem") or {}
+    emby_enrich(item, user_id=s.get("UserId"))
     return parse_emby_session(s, extras=emby_extras)
 
 
@@ -1055,6 +1054,27 @@ def selftest():
     assert emby_select_session(sessions, set()) is sessions[2]
     assert emby_select_session(sessions, {"alice"}) is sessions[2]
     assert emby_select_session(sessions, {"bob"}) is None
+    captured = {}
+    def fake_fetch(path):
+        captured["path"] = path
+        return {"Items": [{
+            "Genres": ["Horror"], "MediaStreams": [{"Type": "Video"}],
+            "People": [{"Name": "Bill Skarsgard", "Role": "Eddie",
+                        "Type": "Actor", "Id": "1", "PrimaryImageTag": "abc"}],
+            "UserData": {"Played": True, "IsFavorite": True, "PlayCount": 0}}]}
+    _orig_fetch = globals()["emby_fetch_json"]
+    globals()["emby_fetch_json"] = fake_fetch
+    try:
+        _emby_enrich_cache.clear()
+        it = {"Id": "999"}
+        emby_enrich(it, user_id="u1")
+        assert it["People"][0]["Name"] == "Bill Skarsgard"
+        assert it["UserData"]["Played"] is True
+        assert "UserId=u1" in captured["path"]
+        assert "People" in captured["path"] and "UserData" in captured["path"]
+    finally:
+        globals()["emby_fetch_json"] = _orig_fetch
+        _emby_enrich_cache.clear()
     assert TARGET in ("nest", "esp32")
     # Nest device functions exist and are the chosen dispatch
     assert device_available is not None and device_show is not None
