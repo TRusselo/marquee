@@ -90,6 +90,9 @@ DEFAULT_SETTINGS = {
 EDITABLE_BLOCKS = ("clock", "identity", "meta", "plot", "ratings",
                    "progress", "poster")
 
+CAST_MAX = 6            # top-billed actors shown on the card
+HEADSHOT_PX = (150, 150)
+
 _meta_cache = {}  # ratingKey -> extras dict
 
 
@@ -103,8 +106,10 @@ def fetch_xml(path):
 
 
 def atomic_write(path, data, mode="w"):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=parent or None)
     with os.fdopen(fd, mode) as f:
         f.write(data)
     os.replace(tmp, path)
@@ -348,13 +353,19 @@ def emby_download_art(item):
     return out
 
 
+def emby_billed_cast(people):
+    """Top-billed actors, in one place, so the contract list and the saved
+    headshot filenames (cast/N.jpg) share an index space."""
+    return [p for p in (people or [])
+            if p.get("Type") == "Actor" and p.get("Name")][:CAST_MAX]
+
+
 def emby_download_cast(people):
-    """Save headshots for up to 6 actors into output/cast/N.jpg."""
-    actors = [p for p in people if p.get("Type") == "Actor"][:6]
-    for i, p in enumerate(actors):
+    """Save headshots for the billed cast into output/cast/N.jpg."""
+    for i, p in enumerate(emby_billed_cast(people)):
         if p.get("Id") and p.get("PrimaryImageTag"):
             try:
-                emby_save_image(p["Id"], "Primary", f"cast/{i}.jpg", 150, 150)
+                emby_save_image(p["Id"], "Primary", f"cast/{i}.jpg", *HEADSHOT_PX)
             except Exception as e:
                 print(f"emby cast art failed: {e}", flush=True)
 
@@ -393,13 +404,14 @@ def library_extras(rating_key, is_movie=False):
             x["chapters"] = [int(c.get("startTimeOffset"))
                              for c in item.findall("Chapter")
                              if c.get("startTimeOffset") is not None]
+            # one filtered list so x["cast"][i] lines up with cast/{i}.jpg
+            roles = [r for r in item.findall("Role") if r.get("tag")][:CAST_MAX]
             x["cast"] = [{"name": r.get("tag"), "role": r.get("role") or "",
-                          "thumb": bool(r.get("thumb"))}
-                         for r in item.findall("Role")[:6] if r.get("tag")]
-            for i, r in enumerate(item.findall("Role")[:6]):
+                          "thumb": bool(r.get("thumb"))} for r in roles]
+            for i, r in enumerate(roles):
                 if r.get("thumb"):
                     try:
-                        transcode_to(f"cast/{i}.jpg", r.get("thumb"), 150, 150)
+                        transcode_to(f"cast/{i}.jpg", r.get("thumb"), *HEADSHOT_PX)
                     except Exception as e:
                         print(f"plex cast art failed: {e}", flush=True)
             for r in item.findall("Rating"):
@@ -522,10 +534,9 @@ def parse_emby_session(session, extras):
         info["watched"] = bool(ud.get("Played"))   # NOT PlayCount — verified
     if "IsFavorite" in ud:
         info["favorite"] = bool(ud.get("IsFavorite"))
-    people = [p for p in (item.get("People") or []) if p.get("Type") == "Actor"]
-    cast = [{"name": p.get("Name"), "role": p.get("Role") or "",
+    cast = [{"name": p["Name"], "role": p.get("Role") or "",
              "thumb": bool(p.get("PrimaryImageTag"))}
-            for p in people[:6] if p.get("Name")]
+            for p in emby_billed_cast(item.get("People"))]
     if cast:
         info["cast"] = cast
     x = extras(item)
@@ -589,14 +600,13 @@ def parse_session(video, extras=library_extras):
                  (media.get("videoCodec") or "").upper() or None,
                  (media.get("audioCodec") or "").upper() or None]
         info["media"] = " · ".join(p for p in parts if p)
+    part = media.find("Part") if media is not None else None
     if video.find("TranscodeSession") is not None:
         info["playMethod"] = "transcode"
     elif media is not None:
-        part = media.find("Part")
         decision = part.get("decision") if part is not None else None
         info["playMethod"] = {"copy": "directstream",
                               "transcode": "transcode"}.get(decision, "directplay")
-    part = media.find("Part") if media is not None else None
     if part is not None:
         for stream in part.findall("Stream"):
             if stream.get("selected") != "1":
@@ -743,7 +753,17 @@ def emby_enrich(item, user_id=None):
             for f in ("Genres", "MediaStreams", "ProviderIds", "Overview",
                       "OfficialRating", "CommunityRating", "CriticRating",
                       "People", "UserData", "Taglines", "Chapters"):
-                if not item.get(f) and full.get(f) is not None:
+                if full.get(f) is None:
+                    continue
+                have = item.get(f)
+                if isinstance(have, dict) and isinstance(full[f], dict):
+                    # /Sessions can return a partial dict (e.g. UserData with only
+                    # PlaybackPositionTicks). A truthy-but-partial dict must still
+                    # gain the missing keys; values already on the session win.
+                    merged = {**full[f], **have}
+                    if merged != have:
+                        enriched[f] = merged
+                elif not have:
                     enriched[f] = full[f]
         except Exception as e:
             print(f"emby enrich failed: {e}", flush=True)
@@ -1139,6 +1159,15 @@ def selftest():
         assert it["UserData"]["Played"] is True
         assert "UserId=u1" in captured["path"]
         assert "People" in captured["path"] and "UserData" in captured["path"]
+        # a truthy-but-partial dict from /Sessions must still gain missing keys,
+        # and values already on the session must win over the fetched ones
+        _emby_enrich_cache.clear()
+        partial = {"Id": "998", "UserData": {"PlaybackPositionTicks": 42,
+                                             "IsFavorite": False}}
+        emby_enrich(partial, user_id="u1")
+        assert partial["UserData"]["Played"] is True        # merged in
+        assert partial["UserData"]["PlaybackPositionTicks"] == 42  # session kept
+        assert partial["UserData"]["IsFavorite"] is False   # session wins
     finally:
         globals()["emby_fetch_json"] = _orig_fetch
         _emby_enrich_cache.clear()
@@ -1146,13 +1175,20 @@ def selftest():
     _orig_save = globals()["emby_save_image"]
     globals()["emby_save_image"] = lambda item_id, kind, out, w, h: saved.append((item_id, kind, out))
     try:
+        # index space is shared with the contract cast list: unnamed people are
+        # filtered out of both, so cast[i] always matches cast/{i}.jpg
         emby_download_cast([
-            {"name": "Bill Skarsgard", "Id": "10", "PrimaryImageTag": "aaa", "Type": "Actor"},
-            {"name": "No Photo", "Id": "13", "Type": "Actor"}])
+            {"Name": "Bill Skarsgard", "Id": "10", "PrimaryImageTag": "aaa", "Type": "Actor"},
+            {"Name": "No Photo", "Id": "13", "Type": "Actor"},
+            {"Name": "A Director", "Id": "14", "PrimaryImageTag": "ccc", "Type": "Director"}])
         assert ("10", "Primary", "cast/0.jpg") in saved
         assert not any(t[0] == "13" for t in saved)   # skipped: no image tag
+        assert not any(t[0] == "14" for t in saved)   # skipped: not an actor
     finally:
         globals()["emby_save_image"] = _orig_save
+    assert [p["Name"] for p in emby_billed_cast(
+        [{"Name": "A", "Type": "Actor"}, {"Type": "Actor"},          # unnamed: dropped
+         {"Name": "B", "Type": "Actor"}, {"Name": "D", "Type": "Director"}])] == ["A", "B"]
     assert TARGET in ("nest", "esp32")
     # Nest device functions exist and are the chosen dispatch
     assert device_available is not None and device_show is not None
