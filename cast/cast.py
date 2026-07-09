@@ -103,6 +103,7 @@ def fetch_xml(path):
 
 
 def atomic_write(path, data, mode="w"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
     with os.fdopen(fd, mode) as f:
         f.write(data)
@@ -347,6 +348,17 @@ def emby_download_art(item):
     return out
 
 
+def emby_download_cast(people):
+    """Save headshots for up to 6 actors into output/cast/N.jpg."""
+    actors = [p for p in people if p.get("Type") == "Actor"][:6]
+    for i, p in enumerate(actors):
+        if p.get("Id") and p.get("PrimaryImageTag"):
+            try:
+                emby_save_image(p["Id"], "Primary", f"cast/{i}.jpg", 150, 150)
+            except Exception as e:
+                print(f"emby cast art failed: {e}", flush=True)
+
+
 def download_art(item, rating_key):
     """Save poster.jpg, backdrop.jpg, logo.png into output/."""
     out = {"poster": False, "backdrop": False, "logo": False}
@@ -384,6 +396,12 @@ def library_extras(rating_key, is_movie=False):
             x["cast"] = [{"name": r.get("tag"), "role": r.get("role") or "",
                           "thumb": bool(r.get("thumb"))}
                          for r in item.findall("Role")[:6] if r.get("tag")]
+            for i, r in enumerate(item.findall("Role")[:6]):
+                if r.get("thumb"):
+                    try:
+                        transcode_to(f"cast/{i}.jpg", r.get("thumb"), 150, 150)
+                    except Exception as e:
+                        print(f"plex cast art failed: {e}", flush=True)
             for r in item.findall("Rating"):
                 if (r.get("image") or "").startswith("imdb://") and r.get("value"):
                     x["imdb"] = float(r.get("value"))
@@ -697,6 +715,10 @@ def emby_extras(item):
         x.update(emby_download_art(item))
     except Exception as e:
         print(f"emby art failed: {e}", flush=True)
+    try:
+        emby_download_cast(item.get("People") or [])
+    except Exception as e:
+        print(f"emby cast art failed: {e}", flush=True)
     if key:
         _emby_meta_cache.clear()  # only ever need the current item
         _emby_meta_cache[key] = x
@@ -1109,6 +1131,17 @@ def selftest():
     finally:
         globals()["emby_fetch_json"] = _orig_fetch
         _emby_enrich_cache.clear()
+    saved = []
+    _orig_save = globals()["emby_save_image"]
+    globals()["emby_save_image"] = lambda item_id, kind, out, w, h: saved.append((item_id, kind, out))
+    try:
+        emby_download_cast([
+            {"name": "Bill Skarsgard", "Id": "10", "PrimaryImageTag": "aaa", "Type": "Actor"},
+            {"name": "No Photo", "Id": "13", "Type": "Actor"}])
+        assert ("10", "Primary", "cast/0.jpg") in saved
+        assert not any(t[0] == "13" for t in saved)   # skipped: no image tag
+    finally:
+        globals()["emby_save_image"] = _orig_save
     assert TARGET in ("nest", "esp32")
     # Nest device functions exist and are the chosen dispatch
     assert device_available is not None and device_show is not None
