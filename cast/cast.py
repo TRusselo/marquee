@@ -450,6 +450,9 @@ def parse_emby_session(session, extras):
         info["runtime"] = f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m"
     if item.get("Overview"):
         info["summary"] = item["Overview"]
+    taglines = item.get("Taglines") or []
+    if taglines:
+        info["tagline"] = taglines[0]
     if item.get("OfficialRating"):
         info["contentRating"] = item["OfficialRating"]
     genres = [g for g in (item.get("Genres") or []) if g]
@@ -507,6 +510,8 @@ def parse_session(video, extras=library_extras):
                             "durationMs": int(a("duration"))}
     if a("summary"):
         info["summary"] = a("summary")
+    if a("tagline"):
+        info["tagline"] = a("tagline")
     if x["genres"]:
         info["genres"] = x["genres"][:3]
     if x["stinger"]:
@@ -852,7 +857,8 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
   summary="Miranda returns." contentRating="PG-13" duration="7141120" ratingKey="79372"
   rating="7.7" ratingImage="rottentomatoes://image.rating.ripe"
   audienceRating="8.4" audienceRatingImage="rottentomatoes://image.rating.upright"
-  viewOffset="3600000">
+  viewOffset="3600000"
+  tagline="She's back, and twice as fierce.">
   <Media videoResolution="1080" videoCodec="h264" audioCodec="eac3"/>
   <Player state="paused"/></Video>"""
 
@@ -865,6 +871,7 @@ SAMPLE_EMBY_SESSION = {
         "Name": "The Devil Wears Prada 2", "Type": "Movie",
         "ProductionYear": 2026, "RunTimeTicks": 71411200000,
         "Overview": "Miranda returns.", "OfficialRating": "PG-13",
+        "Taglines": ["She's back, and twice as fierce."],
         "Genres": ["Comedy", "Drama"], "Id": "79372",
         "ProviderIds": {"Tmdb": "12345", "Imdb": "tt1234567"},
         "CommunityRating": 7.2, "CriticRating": 77,
@@ -890,6 +897,7 @@ def selftest():
     assert info["scores"] == {"rtCritic": 77, "rtCriticFresh": True,
                               "rtAudience": 84, "rtAudienceFresh": True, "imdb": 7.2}
     assert info["genres"] == ["Comedy", "Drama"]
+    assert info["tagline"] == "She's back, and twice as fierce."
     assert info["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert info["state"] == "paused"
     assert info["stinger"] == ["after"]
@@ -946,6 +954,7 @@ def selftest():
     assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
     assert einfo["stinger"] == ["after"]
     assert einfo["poster"] and einfo["backdrop"] and einfo["logo"]
+    assert einfo["tagline"] == "She's back, and twice as fierce."
     # episode shape
     eep = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
     eep["NowPlayingItem"].update(Type="Episode", SeriesName="Severance",
