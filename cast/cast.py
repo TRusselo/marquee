@@ -109,7 +109,8 @@ DEFAULT_SETTINGS = {
 }
 
 EDITABLE_BLOCKS = ("clock", "identity", "meta", "plot", "ratings",
-                   "progress", "poster", "stinger")
+                   "progress", "poster", "stinger",
+                   "tagline", "badges", "tracks", "cast")
 
 CAST_MAX = 6            # top-billed actors shown on the card
 HEADSHOT_PX = (150, 150)
@@ -1288,6 +1289,13 @@ def selftest():
                                  "unknown": {"x": 1}})
     assert layout == {"identity": {"x": 12.35, "y": -100, "width": 100,
                                    "scale": 3, "align": "center"}}
+    # Every block the card page can position must be registered here, or
+    # clean_block_layout() silently discards the user's drag on save.
+    for block in ("tagline", "badges", "tracks", "cast"):
+        assert block in EDITABLE_BLOCKS, block
+    kept = clean_block_layout({"cast": {"x": 4}, "tagline": {"y": -2},
+                               "nosuchblock": {"x": 1}})
+    assert kept == {"cast": {"x": 4}, "tagline": {"y": -2}}
     assert ACCENT_RE.match("#A1b2C3") and not ACCENT_RE.match("red") \
         and not ACCENT_RE.match("#12345")
     v = ET.fromstring(SAMPLE_SESSION)
