@@ -230,6 +230,14 @@ if TARGET not in ("nest", "esp32"):
     TARGET = "nest"
 
 
+def profile_url(page_url, profile):
+    """Tag a card URL with the profile whose settings it should render."""
+    if query_profile(page_url):
+        return page_url
+    sep = "&" if "?" in page_url else "?"
+    return f"{page_url}{sep}profile={profile}"
+
+
 def nest_available():
     return bool(hub_ip())
 
@@ -239,8 +247,9 @@ def nest_active():
 
 
 def nest_show(page_url):
-    sep = "&" if "?" in page_url else "?"
-    catt("cast_site", f"{page_url}{sep}cb={int(time.time())}")
+    # profile_url always leaves a "?" behind, so "&cb=" is safe to append.
+    url = profile_url(page_url, "cast")
+    catt("cast_site", f"{url}&cb={int(time.time())}")
 
 
 def nest_hide():
@@ -1503,6 +1512,17 @@ def selftest():
     bad = save_settings(base, {"density": "huge", "orientation": "sideways"}, "cast")
     assert bad["profiles"]["cast"]["density"] == "full"
     assert bad["profiles"]["cast"]["orientation"] == "auto"
+    # the card URL names the profile whose settings it should render
+    assert profile_url("http://h:8084/image", "cast") == \
+        "http://h:8084/image?profile=cast"
+    assert profile_url("http://h:8084/image?x=1", "esp") == \
+        "http://h:8084/image?x=1&profile=esp"
+    # an explicit profile already in the URL is respected, not duplicated
+    assert profile_url("http://h:8084/image?profile=esp", "cast") == \
+        "http://h:8084/image?profile=esp"
+    # nest_show appends "&cb=", so a separator must always be present already
+    assert "?" in profile_url("http://h:8084/image", "cast")
+
     # a save is round-trippable: what you POST is what /settings.json serves
     assert resolve_settings(updated, "esp")["template"] == "onesheet"
     assert resolve_settings(updated, "esp")["hubIp"] == "10.0.0.9"
