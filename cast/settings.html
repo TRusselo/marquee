@@ -73,10 +73,23 @@
     width: 18px; height: 18px; border-radius: 50%; background: #6B7280; transition: .15s; }
   input[type=checkbox]:checked { background: rgba(229,168,59,.35); }
   input[type=checkbox]:checked::after { left: 21px; background: var(--amber); }
+  /* A field, the line explaining what it inherits, and any scan results. */
+  .fieldcol { display: grid; gap: 6px; justify-items: end; min-width: 0; }
+  .fieldhint { margin: 0; font-size: 12px; line-height: 1.35; color: var(--mut);
+    text-align: right; max-width: 260px; }
+  .fieldhint b { color: var(--text); font-weight: 600; }
+  .fieldhint.bad { color: #e06c6c; }
+  .found { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+  .found button { font: inherit; font-size: 12px; padding: 4px 10px;
+    border-radius: 999px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--text); cursor: pointer; }
+  .found button:hover { border-color: var(--text); }
   .devpick { display: flex; gap: 8px; align-items: center; min-width: 0; }
   .devpick select, select.mini, input.mini { max-width: 200px; min-height: 40px;
     color: var(--text); background: var(--bg); border: 1px solid var(--line);
     border-radius: 8px; padding: 6px 8px; font-size: 14px; }
+  /* An IPv4 address needs the room; the Scan button sits beside it. */
+  #hub { max-width: 150px; font-variant-numeric: tabular-nums; }
   .vibes-step { display: flex; gap: 8px; align-items: stretch; }
   .vibes-step .secondary { padding: 6px 12px; font-size: 13px; }
   .vibe-now { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
@@ -304,18 +317,29 @@
 
   <div class="panel">
     <h2>Casting</h2>
-    <div class="row"><label>Cast device<small>Scan finds Google Cast devices over mDNS, which many routers drop. If your display is missing, type its IP.</small></label>
-      <div class="devpick">
-        <input type="text" id="hub" class="mini" list="hublist" autocomplete="off"
-               placeholder="192.168.1.50" spellcheck="false">
-        <datalist id="hublist"></datalist>
-        <button class="secondary" id="scan" type="button">Scan</button>
+    <div class="row"><label>Cast device<small>Scan finds displays over mDNS, which many networks drop. If yours is missing, type its IP — it still works.</small></label>
+      <div class="fieldcol">
+        <div class="devpick">
+          <input type="text" id="hub" class="mini" autocomplete="off"
+                 placeholder="192.168.1.50" spellcheck="false" inputmode="decimal">
+          <button class="secondary" id="scan" type="button">Scan</button>
+        </div>
+        <div class="found" id="hub-found" hidden></div>
+        <p class="fieldhint" id="hub-hint" hidden></p>
       </div>
     </div>
-    <div class="row"><label>Users<small>Comma-separated usernames. Empty = everyone, including shared and home users — unless MEDIA_USERS is set in the container, in which case that applies. Typing here replaces it.</small></label>
-      <input type="text" id="users" class="mini" placeholder="e.g. jamison" autocomplete="off"></div>
-    <div class="row"><label>Devices<small>Comma-separated player names — only sessions on these devices cast. Empty = any device (your phone at work included), unless MEDIA_DEVICES is set. Typing here replaces it.</small></label>
-      <input type="text" id="devices" class="mini" placeholder="e.g. Living Room TV" autocomplete="off"></div>
+    <div class="row"><label>Users<small>Comma-separated usernames. Empty = everyone, including shared and home users.</small></label>
+      <div class="fieldcol">
+        <input type="text" id="users" class="mini" placeholder="e.g. jamison" autocomplete="off">
+        <p class="fieldhint" id="users-hint" hidden></p>
+      </div>
+    </div>
+    <div class="row"><label>Devices<small>Comma-separated player names — only sessions on these devices cast. Empty = any device (your phone at work included).</small></label>
+      <div class="fieldcol">
+        <input type="text" id="devices" class="mini" placeholder="e.g. Living Room TV" autocomplete="off">
+        <p class="fieldhint" id="devices-hint" hidden></p>
+      </div>
+    </div>
     <div class="row"><label>Rotate between sessions<small>When more than one allowed session is playing, each takes the display for this many seconds. 0 pins the first one (alphabetical by user, then device).</small></label>
       <input type="number" id="rotate" class="mini" min="0" max="3600" step="5" placeholder="30"></div>
     <div class="row"><label>Active sessions<small>Copy exact user and device names from what's playing right now</small></label>
@@ -486,32 +510,71 @@
     i.addEventListener('change', sendCfg));
 
   // Discovery is a convenience, not the source of truth: mDNS is routinely
-  // dropped by routers and VLANs, so the field stays typeable and the scan only
-  // offers suggestions.
+  // dropped by routers and VLANs, so the field stays a plain text box and the
+  // scan only offers what it happened to find, as one-tap chips.
   async function loadDevices(refresh) {
     try {
       const { devices } = await (await fetch('/devices' + (refresh ? '?refresh=1' : ''))).json();
-      $('#hublist').innerHTML = devices
-        .map(d => `<option value="${d.ip}">${d.name}</option>`).join('');
+      const box = $('#hub-found');
+      box.innerHTML = devices.map(d =>
+        `<button type="button" data-ip="${d.ip}" title="${d.model || ''}">${d.name} · ${d.ip}</button>`
+      ).join('');
+      box.hidden = !devices.length;
+      box.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+        $('#hub').value = b.dataset.ip;
+        $('#hub').dispatchEvent(new Event('input'));
+      }));
       return devices.length;
     } catch (e) { return 0; }
   }
 
+  // Env vars are defaults, not overrides. Say so under the field rather than in
+  // the placeholder: a placeholder vanishes the moment you type, and truncates.
+  const ENV = { hubIp: '', plexUsers: '', plexDevices: '' };
   const IP_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+  function paintHint(id, value, envValue, envName, bad) {
+    const el = $('#' + id + '-hint');
+    if (bad) {
+      el.innerHTML = bad; el.hidden = false; el.classList.add('bad'); return;
+    }
+    el.classList.remove('bad');
+    if (!value && envValue) {
+      el.innerHTML = `Empty — inheriting <b>${envValue}</b> (from ENV)`;
+      el.title = `Inherited from the ${envName} environment variable. `
+        + 'Type a value here to override it.';
+      el.hidden = false;
+    } else if (value && envValue) {
+      el.innerHTML = `Overriding <b>${envValue}</b> (from ENV)`;
+      el.title = `${envName} is set to "${envValue}"; this field replaces it. `
+        + 'Clear the field to go back to it.';
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+    }
+  }
+
+  function hubHint() {
+    const v = $('#hub').value.trim();
+    paintHint('hub', v, ENV.hubIp, 'HUB_IP',
+      v && !IP_RE.test(v) ? 'Must be an IP address, e.g. 192.168.1.50' : '');
+  }
+
   $('#hub').addEventListener('input', () => {
     const v = $('#hub').value.trim();
     cfg.hubIp = v;
-    if (v && !IP_RE.test(v)) {
-      $('#status').textContent = 'Cast device must be an IP address, e.g. 192.168.1.50.';
-    } else {
-      $('#status').textContent = v
-        ? 'Cast device changed — save to apply.'
-        : 'Cast device cleared — the HUB_IP env var will be used, if set.';
-    }
+    hubHint();
+    if (v && !IP_RE.test(v)) return;   // the hint under the field says it
+    $('#status').textContent = v
+      ? 'Cast device changed — save to apply.'
+      : 'Cast device cleared — save to apply.';
   });
 
   ['users', 'devices'].forEach(id => $('#' + id).addEventListener('input', () => {
-    cfg[id === 'users' ? 'plexUsers' : 'plexDevices'] = $('#' + id).value;
+    const key = id === 'users' ? 'plexUsers' : 'plexDevices';
+    cfg[key] = $('#' + id).value;
+    paintHint(id, $('#' + id).value.trim(), ENV[key],
+      id === 'users' ? 'MEDIA_USERS' : 'MEDIA_DEVICES', '');
     $('#status').textContent = 'Filter changed — save to apply.';
   }));
   $('#rotate').addEventListener('input', () => {
@@ -542,25 +605,20 @@
     $('#scan').disabled = true; $('#scan').textContent = 'Scanning…';
     const n = await loadDevices(true);
     $('#scan').disabled = false; $('#scan').textContent = 'Scan';
-    $('#status').textContent = n ? `Found ${n} device${n > 1 ? 's' : ''}.`
-      : 'No devices found — the scan needs the container on the same network as the Hub.';
+    $('#status').textContent = n
+      ? `Found ${n} device${n > 1 ? 's' : ''} — tap one, or type an IP.`
+      : 'No devices found. mDNS is often blocked; type the display’s IP instead.';
   });
 
-  // Values the container was started with. They are never merged into cfg --
-  // they only become placeholders, so an empty field reads as "inheriting this"
-  // instead of "nothing is set". Typing a value overrides the env var.
+  // Values the container was started with. Never merged into cfg -- they only
+  // drive the hint under each field, so an empty box reads as "inheriting this"
+  // rather than "nothing is set". Typing a value overrides the env var.
   async function loadEnvHints() {
-    let env = {};
-    try { env = await (await fetch('/env-defaults')).json(); } catch (e) { return; }
-    const hint = (sel, value, name) => {
-      if (!value) return;
-      $(sel).placeholder = `${value}  (from ${name})`;
-      $(sel).title = `Inherited from the ${name} environment variable. `
-        + 'Type a value here to override it.';
-    };
-    hint('#hub', env.hubIp, 'HUB_IP');
-    hint('#users', env.plexUsers, 'MEDIA_USERS');
-    hint('#devices', env.plexDevices, 'MEDIA_DEVICES');
+    try { Object.assign(ENV, await (await fetch('/env-defaults')).json()); }
+    catch (e) { return; }
+    hubHint();
+    paintHint('users', $('#users').value.trim(), ENV.plexUsers, 'MEDIA_USERS', '');
+    paintHint('devices', $('#devices').value.trim(), ENV.plexDevices, 'MEDIA_DEVICES', '');
   }
 
   async function load() {
