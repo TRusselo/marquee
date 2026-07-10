@@ -1,13 +1,25 @@
 # Marquee
 
-[![Build](https://github.com/Jamisonfitz/marquee/actions/workflows/container.yml/badge.svg)](https://github.com/Jamisonfitz/marquee/actions/workflows/container.yml)
-[![Top language](https://img.shields.io/github/languages/top/Jamisonfitz/marquee)](https://github.com/Jamisonfitz/marquee)
+[![Top language](https://img.shields.io/github/languages/top/TRusselo/marquee)](https://github.com/TRusselo/marquee)
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Docker Pulls](https://img.shields.io/docker/pulls/jamisonfitz/marquee?logo=docker)](https://hub.docker.com/r/jamisonfitz/marquee)
-[![Docker Image Version](https://img.shields.io/docker/v/jamisonfitz/marquee?sort=semver&logo=docker)](https://hub.docker.com/r/jamisonfitz/marquee/tags)
-[![License](https://img.shields.io/github/license/Jamisonfitz/marquee)](LICENSE)
+[![Upstream](https://img.shields.io/badge/fork%20of-Jamisonfitz%2Fmarquee-blue?logo=github)](https://github.com/Jamisonfitz/marquee)
+[![License](https://img.shields.io/github/license/TRusselo/marquee)](LICENSE)
 
 Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex or Emby** now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the display to ambient mode when playback stops. It can also drive an **ESP32/ESPHome** display, which renders the card by polling Marquee's read-only JSON API.
+
+> **This is a fork.** Upstream [Jamisonfitz/marquee](https://github.com/Jamisonfitz/marquee)
+> is the original and is Plex + Google Cast; everything you see below that isn't
+> Emby, ESP32, or a vertical poster view is his work, and this fork tracks his
+> releases (currently **v1.6.0**). What's added here:
+>
+> - **Emby** as a media backend, alongside Plex (`MEDIA_BACKEND=emby`)
+> - **ESP32 / ESPHome** as a display target, alongside Google Cast
+> - A richer now-playing payload (cast, chapters, tagline, tracks, play method)
+> - Home Assistant notes and multi-display guides
+>
+> There is no published container image for this fork — build it yourself
+> (see [Quick Start](#quick-start)). Please file fork-specific issues here
+> rather than upstream.
 
 ![One app, many looks — templates × themes × fonts](docs/screenshots/variety.jpg)
 
