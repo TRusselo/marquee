@@ -771,13 +771,34 @@ def current_session():
     return match
 
 
-def emby_select_session(sessions, users):
-    """First session with a Movie/Episode NowPlayingItem for an allowed user."""
+def emby_session_names(s):
+    """(user, device) display names for an Emby session; device falls back
+    from DeviceName to Client, mirroring session_names() on the Plex path."""
+    return (s.get("UserName") or "",
+            s.get("DeviceName") or s.get("Client") or "")
+
+
+def emby_session_allowed(s, users, devices):
+    """True when the session's user AND device pass the allow-lists
+    (an empty list allows everyone / any device)."""
+    if users and (s.get("UserName") or "").lower() not in users:
+        return False
+    if devices:
+        names = {(s.get(k) or "").lower()
+                 for k in ("DeviceName", "Client")} - {""}
+        if not (names & devices):
+            return False
+    return True
+
+
+def emby_select_session(sessions, users, devices=frozenset()):
+    """First session with a Movie/Episode NowPlayingItem whose user AND device
+    pass the allow-lists (an empty list allows everyone / any device)."""
     for s in sessions:
         item = s.get("NowPlayingItem")
         if not item or item.get("Type") not in ("Movie", "Episode"):
             continue
-        if users and (s.get("UserName") or "").lower() not in users:
+        if not emby_session_allowed(s, users, devices):
             continue
         return s
     return None
@@ -856,13 +877,26 @@ def emby_enrich(item, user_id=None):
 
 
 def emby_current_session():
+    settings = load_settings()
+    users = USERS | csv_set(settings.get("plexUsers"))
+    devices = DEVICES | csv_set(settings.get("plexDevices"))
     sessions = emby_fetch_json("/Sessions")
-    s = emby_select_session(sessions, USERS)
-    if not s:
+    seen, match = [], None
+    for s in sessions:
+        item = s.get("NowPlayingItem")
+        if not item or item.get("Type") not in ("Movie", "Episode"):
+            continue
+        u, d = emby_session_names(s)
+        ok = emby_session_allowed(s, users, devices)
+        seen.append({"user": u, "device": d,
+                     "title": item.get("Name") or "", "allowed": ok})
+        if ok and match is None:
+            match = s
+    LAST_SESSIONS[:] = seen
+    if not match:
         return None
-    item = s.get("NowPlayingItem") or {}
-    emby_enrich(item, user_id=s.get("UserId"))
-    return parse_emby_session(s, extras=emby_extras)
+    emby_enrich(match.get("NowPlayingItem") or {}, user_id=match.get("UserId"))
+    return parse_emby_session(match, extras=emby_extras)
 
 
 def migrate_settings(raw):
@@ -1336,6 +1370,31 @@ def selftest():
     assert emby_select_session(sessions, set()) is sessions[2]
     assert emby_select_session(sessions, {"alice"}) is sessions[2]
     assert emby_select_session(sessions, {"bob"}) is None
+
+    # device filters, matching the Plex path (v1.4.0 shipped them Plex-only)
+    esessions = [
+        {"UserName": "Alice", "DeviceName": "Chrome", "Client": "Emby Web",
+         "NowPlayingItem": {"Type": "Movie", "Id": "1"}, "PlayState": {}},
+        {"UserName": "Alice", "DeviceName": "Living Room TV",
+         "Client": "Emby Theater",
+         "NowPlayingItem": {"Type": "Movie", "Id": "2"}, "PlayState": {}},
+    ]
+    def pick(u, d):
+        got = emby_select_session(esessions, u, d)
+        return got and got["NowPlayingItem"]["Id"]
+    assert pick(set(), set()) == "1"          # no filters -> first playable
+    assert pick(set(), {"living room tv"}) == "2"   # by DeviceName
+    assert pick(set(), {"emby theater"}) == "2"     # or by Client
+    assert pick({"alice"}, {"chrome"}) == "1"       # user AND device must pass
+    assert pick({"bob"}, {"chrome"}) is None
+    assert pick(set(), {"nope"}) is None
+
+    # the settings page reads device names off LAST_SESSIONS, so Emby must
+    # report them the way Plex does: DeviceName, falling back to Client
+    assert emby_session_names(esessions[1]) == ("Alice", "Living Room TV")
+    assert emby_session_names({"UserName": "Al", "Client": "Emby Web"}) == \
+        ("Al", "Emby Web")
+    assert emby_session_names({}) == ("", "")
     captured = {}
     def fake_fetch(path):
         captured["path"] = path
