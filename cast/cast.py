@@ -807,13 +807,23 @@ LAST_SESSIONS = []  # every active session from the last poll, filtered or not
 
 # The card page fetches /now-playing.json every POLL seconds. When it stops, the
 # page is gone even if the display still reports the DashCast app as loaded.
+# `at` is only ever set by a real request, so /healthz reports the truth. The
+# startup grace window is tracked separately rather than by faking a poll --
+# seeding `at` made a card that had never polled look alive.
 LAST_CARD_POLL = {"at": 0.0}
+CARD_GRACE = {"until": 0.0}
 CARD_TIMEOUT = max(45, POLL * 6)
 
 
 def card_alive(now, last_poll, timeout=CARD_TIMEOUT):
     """True when the card fetched now-playing.json recently enough."""
     return bool(last_poll) and (now - last_poll) < timeout
+
+
+def card_ok(now, last_poll, grace_until, timeout=CARD_TIMEOUT):
+    """Leave the display alone: the card is polling, or an already-cast page is
+    still inside the grace window we give it to check in after a restart."""
+    return card_alive(now, last_poll, timeout) or now < grace_until
 
 
 def current_session():
@@ -1163,14 +1173,16 @@ class WebHandler(BaseHTTPRequestHandler):
         elif path == "/sessions":
             self._send(json.dumps({"sessions": LAST_SESSIONS}), "application/json")
         elif path == "/healthz":
-            last = LAST_CARD_POLL["at"]
+            last, now = LAST_CARD_POLL["at"], time.time()
             self._send(json.dumps({
                 "ok": True, "version": VERSION,
-                # seconds since the card last fetched now-playing.json; null
+                # Seconds since the card actually fetched now-playing.json; null
                 # means it has never polled. A number climbing past CARD_TIMEOUT
                 # is a display showing a dead page.
-                "cardPollAgo": round(time.time() - last, 1) if last else None,
-                "cardAlive": card_alive(time.time(), last),
+                "cardPollAgo": round(now - last, 1) if last else None,
+                "cardAlive": card_alive(now, last),
+                # True while a freshly cast page is still allowed to be silent.
+                "cardGrace": now < CARD_GRACE["until"],
             }), "application/json")
         elif path in ("/now-playing.json", "/api/now-playing.json"):
             # Intentional read-only API for ESP32/ESPHome/HA consumers (CORS-enabled).
@@ -1238,7 +1250,9 @@ def loop():
           flush=True)
     # Grace period: an already-cast card gets one CARD_TIMEOUT window to check
     # in before we decide it is dead, so a restart does not re-cast needlessly.
-    LAST_CARD_POLL["at"] = time.time()
+    # This must not touch LAST_CARD_POLL -- /healthz would then report a card
+    # that has never polled as alive.
+    CARD_GRACE["until"] = time.time() + CARD_TIMEOUT
     # Poll sessions fast (5s) so json/poster/hub flip together on play/stop;
     # talk to the hub only on transitions, plus a slow reconcile pass.
     last_playing, tick = None, 0
@@ -1258,17 +1272,20 @@ def loop():
                     # whose page died keeps reporting it, so the loop would sit
                     # there forever in front of a blank screen. The card's own
                     # heartbeat is the ground truth.
-                    alive = card_alive(time.time(), LAST_CARD_POLL["at"])
+                    ok = card_ok(time.time(), LAST_CARD_POLL["at"],
+                                 CARD_GRACE["until"])
                     if playing and not shown:
                         print(f"{BACKEND} playing ({info['title']}) -> showing",
                               flush=True)
                         device_show(PAGE_URL)
-                    elif playing and not alive:
-                        ago = time.time() - LAST_CARD_POLL["at"]
+                        CARD_GRACE["until"] = time.time() + CARD_TIMEOUT
+                    elif playing and not ok:
+                        last = LAST_CARD_POLL["at"]
+                        gone = (f"{time.time() - last:.0f}s" if last else "ever")
                         print(f"display claims to be showing but the card has "
-                              f"not polled in {ago:.0f}s -> re-casting", flush=True)
+                              f"not polled in {gone} -> re-casting", flush=True)
                         device_show(PAGE_URL)
-                        LAST_CARD_POLL["at"] = time.time()   # give it time to load
+                        CARD_GRACE["until"] = time.time() + CARD_TIMEOUT
                     elif not playing and shown:
                         print(f"{BACKEND} idle -> releasing display", flush=True)
                         device_hide()
@@ -1420,6 +1437,15 @@ def selftest():
     # ...and "never polled" stays dead even when the clock is younger than the
     # timeout, which a bare subtraction would misread as alive.
     assert not card_alive(10.0, 0.0, 45)
+
+    # The startup grace window suppresses the re-cast, but it must never make a
+    # card that has not polled *look* alive -- that hid a dead page on a Hub.
+    assert card_ok(100.0, 0.0, grace_until=140.0, timeout=45)   # silent, in grace
+    assert not card_alive(100.0, 0.0, 45)                       # ...but not alive
+    assert not card_ok(100.0, 0.0, grace_until=0.0, timeout=45)  # grace expired
+    assert card_ok(100.0, 99.0, grace_until=0.0, timeout=45)    # polling, no grace
+    # a real poll keeps it ok long after grace has gone
+    assert card_ok(1000.0, 999.0, grace_until=1.0, timeout=45)
 
     einfo = parse_emby_session(SAMPLE_EMBY_SESSION, extras=lambda item: SAMPLE_EMBY_EXTRAS)
     assert einfo["type"] == "movie"
