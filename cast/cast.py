@@ -12,7 +12,13 @@ Two seams, each chosen by env and each defaulting to the original behavior:
 
 Frontend (one HTTP server on :8084): serves the card page and art from
 output/, the settings UI at /settings, /save, /release-notes, and a read-only
-CORS API at /api/now-playing.json and /api/healthz.
+CORS API at /api/now-playing.json, /api/settings and /api/healthz.
+
+Settings live in two profiles (cast, esp); each display fetches its own with
+?profile=<name> on /settings.json or /api/settings, and POSTs it back to
+/save?profile=<name>. Omitting the name means the default profile, so a client
+that knows nothing about profiles still works. Globals (hubIp, the session
+filters, weatherZip) are shared; everything else is per-profile.
 
 Env knobs: PAGE_URL, POLL_SECONDS, REPO_DIR, SERVE_PORT, DATA_DIR.
   Plex:  PLEX_HOST, PLEX_TOKEN
@@ -22,7 +28,7 @@ Env knobs: PAGE_URL, POLL_SECONDS, REPO_DIR, SERVE_PORT, DATA_DIR.
 Optional TMDB_API_KEY enables the credits-scene badge. Optional MEDIA_USERS /
 MEDIA_DEVICES (PLEX_USERS / PLEX_DEVICES honored as fallbacks) limit which
 users and player devices trigger the marquee; both are also editable live on
-the settings page. Device filtering currently applies to the Plex path only.
+the settings page, and both backends honor both filters.
 """
 import json
 import mimetypes

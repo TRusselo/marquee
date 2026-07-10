@@ -113,8 +113,46 @@ live progress.
 
 - `GET /api/now-playing.json` — the live contract dict (or `{"playing": false}`
   when idle), **CORS-enabled** for ESP32/ESPHome/Home Assistant. Also reachable
-  as `/now-playing.json`.
+  as `/now-playing.json`, which is the URL the ESP32 push path hands the panel
+  (derived from `PAGE_URL`'s origin by `esp32_json_url()`).
+- `GET /api/settings?profile=cast|esp` — the resolved settings for one display
+  (template, density, orientation, element toggles), **CORS-enabled** so an
+  ESP/ESPHome panel can fetch its own layout. Unknown profile → the default.
 - `GET /api/healthz` — `{ok, version}`.
+
+## Settings profiles
+
+On disk, `settings.json` is globals plus two named profiles:
+
+```json
+{
+  "default": "cast",
+  "hubIp": "", "plexUsers": "", "plexDevices": "", "weatherZip": "",
+  "profiles": {
+    "cast": {"template": "spotlight", "density": "full",  "orientation": "auto", ...},
+    "esp":  {"template": "onesheet",  "density": "compact", "orientation": "portrait", ...}
+  }
+}
+```
+
+The split is by *scope*, not by page. A global describes the server or the
+household — which Hub to cast to, whose sessions count, where the weather is.
+A profile describes one screen's appearance, so a 320×240 ESP panel can drop
+the cast headshots and chapter markers a Hub has room for.
+
+Nothing that consumes settings knows about this. `load_settings(profile)`
+resolves globals over the named profile and returns the same **flat** dict the
+card page and settings page have always read; `?profile=` is the only new thing
+a caller sees. `migrate_settings()` folds a legacy flat `settings.json` into the
+`cast` profile on first read, and is idempotent.
+
+Two guards matter:
+
+- `/api/settings` is CORS-enabled, so it serves **appearance only**. The globals
+  stay on same-origin `/settings.json` — no page in the user's browser should be
+  able to read their Hub's IP or session filters.
+- `POST /save?profile=esp` rewrites the globals and that one profile. The other
+  profile is copied through untouched.
 
 ## Two ways to build an ESP32 display
 

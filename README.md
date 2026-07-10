@@ -167,16 +167,36 @@ Optional settings:
 - `MEDIA_DEVICES` — comma-separated player/device names that may trigger the
   marquee (e.g. `Living Room TV`); empty means any device. `PLEX_DEVICES` is
   honored as a fallback name. Both lists are also editable live on the settings
-  page under "Who triggers the marquee." **Device filtering currently applies to
-  the Plex backend only**; the Emby path filters by user.
+  page under "Who triggers the marquee." Both backends honor both filters —
+  Emby matches a session's `DeviceName` or `Client`, Plex its player's
+  title/device/product.
 - `TMDB_API_KEY`
 - `POLL_SECONDS` default `5`
 - `SERVE_PORT` default `8084`
-- `REPO_DIR` default `/app`
-- `DATA_DIR` default `/config`
+- `REPO_DIR` — the container sets `/app` (the code's own default is `/repo`)
+- `DATA_DIR` — the container sets `/config` (defaults to `REPO_DIR/output`)
 
 Health status is available at `/healthz` and includes the version. A read-only
 card-state API is at `/api/now-playing.json` (CORS-enabled) for ESP32/ESPHome/HA.
+
+### Display profiles
+
+Appearance settings are stored per display profile — `cast` for a Google Cast
+screen, `esp` for an ESP panel — so a small panel can drop the elements a Hub
+has room for. Both profiles share the globals: the Hub's IP, the session
+filters, and the weather ZIP.
+
+Each display asks for its own with `?profile=cast|esp`:
+
+- `GET /settings.json?profile=esp` — same-origin, the flat settings the card
+  and settings pages have always read, resolved for that profile.
+- `GET /api/settings?profile=esp` — CORS-enabled, appearance only, for an
+  ESP/ESPHome panel to fetch its own layout. Deliberately omits the globals.
+- `POST /save?profile=esp` — writes the globals plus that one profile, leaving
+  the other untouched.
+
+Omit `?profile=` and you get the default profile, so anything that predates
+profiles keeps working unchanged.
 
 ## Documentation
 

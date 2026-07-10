@@ -23,10 +23,39 @@ Emby resolution is now labeled by frame **width**, so letterboxed scope films
 
 The card page does not render these fields yet — that lands with the layout work.
 
+### Settings profiles
+
+Appearance settings are now stored per display profile — `cast` for a Google
+Cast screen, `esp` for an ESP panel — so a small panel can drop the elements a
+Hub has room for. Each profile carries a **density** preset (full / compact /
+minimal) and an **orientation** (auto / landscape / portrait), plus a new
+`onesheet` template for portrait screens. The globals — the Hub's IP, the
+session filters, the weather ZIP — are shared by both.
+
+A display asks for its own settings with `?profile=cast|esp` on
+`/settings.json`, and the settings page POSTs it back to `/save?profile=`,
+which leaves the other profile untouched. **Omitting `?profile=` means the
+default profile, and the served shape is unchanged**, so the card page, the
+settings page, and v1.6.0's export/import all keep working as they were. An
+existing flat `settings.json` folds into the `cast` profile on first read.
+
+New `GET /api/settings?profile=` is CORS-enabled for an ESP/ESPHome panel to
+fetch its own layout. It serves appearance only — the globals stay on
+same-origin `/settings.json`, so no page in your browser can read your Hub's IP
+or session filters.
+
+### Emby session filters
+
+`MEDIA_DEVICES` joins `MEDIA_USERS` (with `PLEX_DEVICES`/`PLEX_USERS` as
+fallbacks), and **both backends now honor both filters** — Emby matches a
+session's `DeviceName` or `Client`. Two Emby-side gaps closed with it: the user
+list typed on the settings page was ignored in favor of the env var, and Emby
+never reported its active sessions, so the settings page's "Active sessions"
+panel was empty. It now lists every playing session, including the ones your
+filters block, so you can copy the exact device names.
+
 ### Notes
 
-- `MEDIA_DEVICES` joins `MEDIA_USERS` (with `PLEX_DEVICES`/`PLEX_USERS` as
-  fallbacks). Device filtering applies to the Plex path only for now.
 - Merged upstream v1.6.0 (session filters, Street template, Vibes, weather,
   card font, export/import, mobile settings).
 
