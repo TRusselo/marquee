@@ -805,6 +805,16 @@ def session_allowed(video, users=None, devices=None):
 
 LAST_SESSIONS = []  # every active session from the last poll, filtered or not
 
+# The card page fetches /now-playing.json every POLL seconds. When it stops, the
+# page is gone even if the display still reports the DashCast app as loaded.
+LAST_CARD_POLL = {"at": 0.0}
+CARD_TIMEOUT = max(45, POLL * 6)
+
+
+def card_alive(now, last_poll, timeout=CARD_TIMEOUT):
+    """True when the card fetched now-playing.json recently enough."""
+    return bool(last_poll) and (now - last_poll) < timeout
+
 
 def current_session():
     s = load_settings()
@@ -1153,15 +1163,26 @@ class WebHandler(BaseHTTPRequestHandler):
         elif path == "/sessions":
             self._send(json.dumps({"sessions": LAST_SESSIONS}), "application/json")
         elif path == "/healthz":
-            self._send(json.dumps({"ok": True, "version": VERSION}), "application/json")
-        elif path == "/api/now-playing.json":
+            last = LAST_CARD_POLL["at"]
+            self._send(json.dumps({
+                "ok": True, "version": VERSION,
+                # seconds since the card last fetched now-playing.json; null
+                # means it has never polled. A number climbing past CARD_TIMEOUT
+                # is a display showing a dead page.
+                "cardPollAgo": round(time.time() - last, 1) if last else None,
+                "cardAlive": card_alive(time.time(), last),
+            }), "application/json")
+        elif path in ("/now-playing.json", "/api/now-playing.json"):
             # Intentional read-only API for ESP32/ESPHome/HA consumers (CORS-enabled).
+            # Serving it here rather than through the static fallthrough lets us
+            # timestamp the card's heartbeat -- see card_alive().
+            LAST_CARD_POLL["at"] = time.time()
             try:
                 with open(JSON_PATH) as f:
                     body = f.read()
             except Exception:
                 body = json.dumps({"playing": False})
-            self._send(body, "application/json", cors=True)
+            self._send(body, "application/json", cors=path.startswith("/api/"))
         elif path == "/api/settings":
             # Read-only, CORS-enabled: an ESP/ESPHome panel fetches the layout
             # and element visibility for its own profile. Appearance only --
@@ -1215,6 +1236,9 @@ def loop():
     threading.Thread(target=serve_web, daemon=True).start()
     print(f"Marquee {VERSION} ready on :{SERVE_PORT} (card: /image, settings: /)",
           flush=True)
+    # Grace period: an already-cast card gets one CARD_TIMEOUT window to check
+    # in before we decide it is dead, so a restart does not re-cast needlessly.
+    LAST_CARD_POLL["at"] = time.time()
     # Poll sessions fast (5s) so json/poster/hub flip together on play/stop;
     # talk to the hub only on transitions, plus a slow reconcile pass.
     last_playing, tick = None, 0
@@ -1230,10 +1254,21 @@ def loop():
                               "settings page, or set HUB_IP / ESP32_HOST", flush=True)
                 else:
                     shown = device_active()
+                    # "shown" only means the DashCast app is loaded. A display
+                    # whose page died keeps reporting it, so the loop would sit
+                    # there forever in front of a blank screen. The card's own
+                    # heartbeat is the ground truth.
+                    alive = card_alive(time.time(), LAST_CARD_POLL["at"])
                     if playing and not shown:
                         print(f"{BACKEND} playing ({info['title']}) -> showing",
                               flush=True)
                         device_show(PAGE_URL)
+                    elif playing and not alive:
+                        ago = time.time() - LAST_CARD_POLL["at"]
+                        print(f"display claims to be showing but the card has "
+                              f"not polled in {ago:.0f}s -> re-casting", flush=True)
+                        device_show(PAGE_URL)
+                        LAST_CARD_POLL["at"] = time.time()   # give it time to load
                     elif not playing and shown:
                         print(f"{BACKEND} idle -> releasing display", flush=True)
                         device_hide()
@@ -1373,6 +1408,19 @@ def selftest():
     assert scan == [{"ip": "192.168.1.50", "name": "Living Room",
                      "model": "Google Inc. Google Nest Hub"}]
     assert IP_RE.match("10.0.0.2") and not IP_RE.match("nest.local")
+
+    # dashcast_active() only proves the DashCast *app* is loaded, not that our
+    # card is drawing. A Hub whose page died keeps reporting DashCast forever,
+    # so the loop never re-casts and the screen stays blank. The card polls
+    # /now-playing.json every POLL seconds; silence means it is gone.
+    assert card_alive(100.0, 99.0, 45)
+    assert card_alive(100.0, 56.0, 45)          # just inside the window
+    assert not card_alive(100.0, 54.0, 45)      # just outside
+    assert not card_alive(100.0, 0.0, 45)       # never polled at all
+    # ...and "never polled" stays dead even when the clock is younger than the
+    # timeout, which a bare subtraction would misread as alive.
+    assert not card_alive(10.0, 0.0, 45)
+
     einfo = parse_emby_session(SAMPLE_EMBY_SESSION, extras=lambda item: SAMPLE_EMBY_EXTRAS)
     assert einfo["type"] == "movie"
     assert einfo["title"] == "The Devil Wears Prada 2"
