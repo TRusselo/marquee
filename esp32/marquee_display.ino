@@ -1,6 +1,12 @@
 /**
  * Marquee Display Firmware for ESP32
  *
+ * !!! UNTESTED !!! This sketch has never been compiled for, flashed to, or run
+ * on a real ESP32. It is a reference implementation from the untested
+ * feature/emby-esp32-support branch of a fork of Jamisonfitz/marquee. Pin
+ * assignments, timings, and library calls may simply be wrong. Verify every
+ * line against your own hardware before trusting it.
+ *
  * Reference implementation for rendering Marquee card on an ESP32-based display.
  * Communicates with Marquee service via HTTP.
  *

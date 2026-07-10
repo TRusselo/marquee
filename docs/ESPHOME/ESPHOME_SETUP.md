@@ -1,5 +1,16 @@
 # ESPHome Hardware Setup
 
+> ### ⚠️ Test branch — never run on hardware
+>
+> This document describes work in progress on `feature/emby-esp32-support`, a
+> fork of [Jamisonfitz/marquee](https://github.com/Jamisonfitz/marquee).
+> **No ESP32, no display panel, and no Cast device has ever run this code.**
+> The wiring, the YAML, and the firmware here are untested proposals: pin
+> assignments, timings, and library calls may simply be wrong.
+>
+> Nothing below should be trusted until you have verified it yourself. Expect
+> to debug. Please report what you find.
+
 Step-by-step guide to wire and prepare your ESP32 + display for Marquee.
 
 ## Hardware Requirements

@@ -1,5 +1,15 @@
 # Architecture: Emby backend & ESP32 target
 
+> ### ⚠️ Test branch — nothing here is verified
+>
+> This document describes work in progress on `feature/emby-esp32-support`, a
+> fork of [Jamisonfitz/marquee](https://github.com/Jamisonfitz/marquee). The
+> Emby backend and the ESP32 display target are **new, unreleased, and have not
+> been tested in a real deployment.** Code here is exercised only by
+> `python cast/cast.py --selftest`.
+>
+> Read this as a description of intent, not a procedure known to work.
+
 How Marquee supports **Plex or Emby** as the media source and **Google Cast or
 ESP32** as the display, without changing its original design.
 

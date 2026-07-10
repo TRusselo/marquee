@@ -1,5 +1,15 @@
 # Implementation Guide: Emby backend & ESP32 target
 
+> ### ⚠️ Test branch — nothing here is verified
+>
+> This document describes work in progress on `feature/emby-esp32-support`, a
+> fork of [Jamisonfitz/marquee](https://github.com/Jamisonfitz/marquee). The
+> Emby backend and the ESP32 display target are **new, unreleased, and have not
+> been tested in a real deployment.** Code here is exercised only by
+> `python cast/cast.py --selftest`.
+>
+> Read this as a description of intent, not a procedure known to work.
+
 How the Emby media-source seam and the ESP32 display-target seam actually work
 inside `cast/cast.py`, and how to extend either one. For the high-level picture
 and diagrams, see `ARCHITECTURE_EMBY_ESP32.md` — this doc is the "how the seams
