@@ -73,10 +73,13 @@
     width: 18px; height: 18px; border-radius: 50%; background: #6B7280; transition: .15s; }
   input[type=checkbox]:checked { background: rgba(229,168,59,.35); }
   input[type=checkbox]:checked::after { left: 21px; background: var(--amber); }
-  /* A field, the line explaining what it inherits, and any scan results. */
-  .fieldcol { display: grid; gap: 6px; justify-items: end; min-width: 0; }
+  /* One column width for every control in a section, so their right edges line
+     up no matter how wide the input's own content is. */
+  .fieldcol { display: grid; gap: 6px; justify-items: stretch; min-width: 0;
+    flex: 0 0 220px; width: 220px; }
+  .fieldcol > button.secondary { justify-self: end; }
   .fieldhint { margin: 0; font-size: 12px; line-height: 1.35; color: var(--mut);
-    text-align: right; max-width: 260px; }
+    text-align: right; }
   .fieldhint b { color: var(--text); font-weight: 600; }
   .fieldhint.bad { color: #e06c6c; }
   .found { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
@@ -88,8 +91,9 @@
   .devpick select, select.mini, input.mini { max-width: 200px; min-height: 40px;
     color: var(--text); background: var(--bg); border: 1px solid var(--line);
     border-radius: 8px; padding: 6px 8px; font-size: 14px; }
-  /* An IPv4 address needs the room; the Scan button sits beside it. */
-  #hub { max-width: 150px; font-variant-numeric: tabular-nums; }
+  /* Inputs fill their column rather than sizing to their own content. */
+  .fieldcol input.mini { max-width: none; width: 100%; }
+  #hub { font-variant-numeric: tabular-nums; }
   .vibes-step { display: flex; gap: 8px; align-items: stretch; }
   .vibes-step .secondary { padding: 6px 12px; font-size: 13px; }
   .vibe-now { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
@@ -307,7 +311,10 @@
     <div class="row"><label>Weather<small>Temperature and conditions beside the clock</small></label>
       <input type="checkbox" data-k="showWeather"></div>
     <div class="row"><label>ZIP code<small>US ZIP for local weather and day/night; blank = auto-locate from your server's IP</small></label>
-      <input type="text" id="zip" class="mini" placeholder="e.g. 30301" autocomplete="off"></div>
+      <div class="fieldcol">
+        <input type="text" id="zip" class="mini" placeholder="e.g. 30301" autocomplete="off">
+      </div>
+    </div>
     <div class="row"><label>Units</label>
       <div class="seg" id="unitfmt">
         <button data-v="f">&deg;F</button><button data-v="c">&deg;C</button>
@@ -317,15 +324,17 @@
 
   <div class="panel">
     <h2>Casting</h2>
-    <div class="row"><label>Cast device<small>Scan finds displays over mDNS, which many networks drop. If yours is missing, type its IP — it still works.</small></label>
+    <div class="row"><label>Cast device<small>The display's IP address.</small></label>
       <div class="fieldcol">
-        <div class="devpick">
-          <input type="text" id="hub" class="mini" autocomplete="off"
-                 placeholder="192.168.1.50" spellcheck="false" inputmode="decimal">
-          <button class="secondary" id="scan" type="button">Scan</button>
-        </div>
-        <div class="found" id="hub-found" hidden></div>
+        <input type="text" id="hub" class="mini" autocomplete="off"
+               placeholder="192.168.1.50" spellcheck="false" inputmode="decimal">
         <p class="fieldhint" id="hub-hint" hidden></p>
+      </div>
+    </div>
+    <div class="row"><label>Find displays<small>Discovery uses mDNS, which many networks drop. A display Scan cannot see is usually still reachable — just type its IP above.</small></label>
+      <div class="fieldcol">
+        <button class="secondary" id="scan" type="button">Scan</button>
+        <div class="found" id="hub-found" hidden></div>
       </div>
     </div>
     <div class="row"><label>Users<small>Comma-separated usernames. Empty = everyone, including shared and home users.</small></label>
@@ -341,7 +350,10 @@
       </div>
     </div>
     <div class="row"><label>Rotate between sessions<small>When more than one allowed session is playing, each takes the display for this many seconds. 0 pins the first one (alphabetical by user, then device).</small></label>
-      <input type="number" id="rotate" class="mini" min="0" max="3600" step="5" placeholder="30"></div>
+      <div class="fieldcol">
+        <input type="number" id="rotate" class="mini" min="0" max="3600" step="5" placeholder="30">
+      </div>
+    </div>
     <div class="row"><label>Active sessions<small>Copy exact user and device names from what's playing right now</small></label>
       <div class="devpick">
         <span class="sessions-list" id="sessions">—</span>
@@ -533,25 +545,29 @@
   const ENV = { hubIp: '', plexUsers: '', plexDevices: '' };
   const IP_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 
+  // Only ever show one value per field. When an env var is inherited it becomes
+  // the placeholder -- a greyed example IP next to a hint naming a *different*
+  // inherited IP is two answers to the same question.
+  const EXAMPLE = { hub: '192.168.1.50', users: 'e.g. jamison',
+                    devices: 'e.g. Living Room TV' };
+
   function paintHint(id, value, envValue, envName, bad) {
     const el = $('#' + id + '-hint');
+    $('#' + id).placeholder = envValue || EXAMPLE[id];
     if (bad) {
       el.innerHTML = bad; el.hidden = false; el.classList.add('bad'); return;
     }
     el.classList.remove('bad');
-    if (!value && envValue) {
-      el.innerHTML = `Empty — inheriting <b>${envValue}</b> (from ENV)`;
-      el.title = `Inherited from the ${envName} environment variable. `
+    if (!envValue) { el.hidden = true; return; }
+    el.innerHTML = value
+      ? `Overrides <b>${envValue}</b> (from ENV)`
+      : 'Inheriting from ENV';
+    el.title = value
+      ? `${envName} is set to "${envValue}"; this field replaces it. `
+        + 'Clear the field to go back to it.'
+      : `Inherited from the ${envName} environment variable. `
         + 'Type a value here to override it.';
-      el.hidden = false;
-    } else if (value && envValue) {
-      el.innerHTML = `Overriding <b>${envValue}</b> (from ENV)`;
-      el.title = `${envName} is set to "${envValue}"; this field replaces it. `
-        + 'Clear the field to go back to it.';
-      el.hidden = false;
-    } else {
-      el.hidden = true;
-    }
+    el.hidden = false;
   }
 
   function hubHint() {
