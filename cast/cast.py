@@ -888,13 +888,33 @@ def migrate_settings(raw):
     return out
 
 
-def load_settings():
+def resolve_settings(raw, profile=None):
+    """Flatten the profile schema for one display: globals + that profile.
+
+    Returns the same flat shape the card page and settings page have always
+    consumed, so `?profile=` is the only thing a caller needs to know about.
+    """
+    if profile not in PROFILES:
+        profile = raw.get("default", "cast")
+    if profile not in PROFILES:
+        profile = "cast"
+    flat = {k: raw[k] for k in GLOBAL_KEYS[1:] if k in raw}
+    flat.update(raw["profiles"][profile])
+    return flat
+
+
+def load_raw_settings():
+    """The on-disk profile schema, migrated and defaulted."""
     try:
         with open(SETTINGS_PATH) as f:
-            saved = json.load(f)
-        return {**DEFAULT_SETTINGS, **{k: v for k, v in saved.items() if k in DEFAULT_SETTINGS}}
+            return migrate_settings(json.load(f))
     except Exception:
-        return dict(DEFAULT_SETTINGS)
+        return migrate_settings({})
+
+
+def load_settings(profile=None):
+    """Flat settings for one display (default profile when unspecified)."""
+    return resolve_settings(load_raw_settings(), profile)
 
 
 def clean_block_layout(value):
@@ -1358,6 +1378,26 @@ def selftest():
     # junk in, defaults out
     assert migrate_settings({})["profiles"]["cast"]["template"] == "spotlight"
     assert migrate_settings("not a dict")["default"] == "cast"
+
+    # resolution merges globals over the chosen profile, flat, as callers expect
+    raw = migrate_settings({"hubIp": "10.0.0.5", "theme": "crimson",
+                            "weatherZip": "90210"})
+    flat = resolve_settings(raw, "cast")
+    assert flat["hubIp"] == "10.0.0.5"          # global
+    assert flat["theme"] == "crimson"           # profile
+    assert flat["density"] == "full"
+    assert "profiles" not in flat and "default" not in flat
+    esp = resolve_settings(raw, "esp")
+    assert esp["template"] == "onesheet" and esp["orientation"] == "portrait"
+    assert esp["hubIp"] == "10.0.0.5"           # globals shared by every profile
+    # weather() reads weatherZip off the flat dict, from whichever profile
+    assert flat["weatherZip"] == esp["weatherZip"] == "90210"
+    # unknown / missing profile falls back to the default profile
+    assert resolve_settings(raw, "bogus") == flat
+    assert resolve_settings(raw, None) == flat
+    # an explicit default is honored
+    picked = migrate_settings({"default": "esp"})
+    assert resolve_settings(picked, None)["template"] == "onesheet"
 
     print("selftest ok")
 
