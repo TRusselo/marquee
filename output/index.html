@@ -330,6 +330,11 @@
   const stage = document.querySelector('.stage');
   const DEMO = new URLSearchParams(location.search).has('demo');
   const EDIT = new URLSearchParams(location.search).has('edit');
+  // Which display profile this card renders. nest_show() casts ?profile=cast;
+  // an ESP panel loads ?profile=esp. The server validates the name and falls
+  // back to the default profile, so a junk value is harmless.
+  const PROFILE = new URLSearchParams(location.search).get('profile') || '';
+  const profileQS = PROFILE ? '&profile=' + encodeURIComponent(PROFILE) : '';
   const TEMPLATES = ['spotlight', 'split', 'hero', 'lowerthird', 'bigclock', 'street'];
   let shownKey = null, prog = null, state = 'playing', fetchedAt = 0;
   let baseCfg = null, draftCfg = null, draftLayout = null, lastD = null;
@@ -858,7 +863,8 @@ ${bulbs.join('')}
   let lastCfgText = '';
   async function settingsTick() {
     try {
-      const text = await (await fetch('/settings.json?t=' + Date.now())).text();
+      const text = await (await fetch(
+        '/settings.json?t=' + Date.now() + profileQS)).text();
       if (text !== lastCfgText) {
         lastCfgText = text;
         baseCfg = JSON.parse(text);
