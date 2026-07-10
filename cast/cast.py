@@ -104,6 +104,7 @@ DEFAULT_SETTINGS = {
     "showProgress": True, "showClock": True,
     "backdrop": True, "logo": True,
     "plexUsers": "", "plexDevices": "",
+    "rotateSeconds": 30,
     "showWeather": False, "weatherZip": "", "weatherUnits": "f",
     "blockLayout": {},
 }
@@ -116,7 +117,18 @@ CAST_MAX = 6            # top-billed actors shown on the card
 HEADSHOT_PX = (150, 150)
 
 PROFILES = ("cast", "esp")            # one Cast/Nest display, one ESP panel
-GLOBAL_KEYS = ("default", "hubIp", "plexUsers", "plexDevices", "weatherZip")
+GLOBAL_KEYS = ("default", "hubIp", "plexUsers", "plexDevices", "weatherZip",
+               "rotateSeconds")
+# Globals are not all strings, so migrating and saving them needs the type.
+GLOBAL_DEFAULTS = {"hubIp": "", "plexUsers": "", "plexDevices": "",
+                   "weatherZip": "", "rotateSeconds": 30}
+
+
+def coerce_global(key, value):
+    """One global setting, validated to its own type."""
+    if key == "rotateSeconds":
+        return clamp_rotate(value)
+    return value if isinstance(value, str) else GLOBAL_DEFAULTS[key]
 DENSITIES = ("full", "compact", "minimal", "custom")
 ORIENTATIONS = ("auto", "landscape", "portrait")
 
@@ -732,6 +744,41 @@ def session_names(video):
     return u, d
 
 
+def session_sort_key(user, device, title):
+    """A total, case-insensitive order over sessions.
+
+    /status/sessions has no defined order and Plex reorders it as sessions come
+    and go, so "the first allowed session" is not a stable choice. Sorting first
+    makes the pick deterministic: every poll, and every display, agrees.
+    """
+    return ((user or "").lower(), (device or "").lower(), (title or "").lower())
+
+
+def clamp_rotate(value):
+    """Rotation period in seconds: 0 disables, otherwise 5..3600."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return 30
+    if seconds <= 0:
+        return 0
+    return max(5, min(3600, seconds))
+
+
+def rotate_pick(items, seconds, now=None):
+    """Which of several equally-allowed sessions drives the display right now.
+
+    The choice is a pure function of the wall clock, so it needs no state and
+    survives a restart mid-rotation. `seconds` <= 0 pins the first session.
+    """
+    if not items:
+        return None
+    if len(items) == 1 or seconds <= 0:
+        return items[0]
+    now = time.time() if now is None else now
+    return items[int(now // seconds) % len(items)]
+
+
 def session_allowed(video, users=None, devices=None):
     """True when the session's Plex user AND device pass the allow-lists
     (an empty list allows everyone / any device).
@@ -764,18 +811,23 @@ def current_session():
     users = USERS | csv_set(s.get("plexUsers"))
     devices = DEVICES | csv_set(s.get("plexDevices"))
     root = fetch_xml("/status/sessions")
-    seen, match = [], None
+    seen, allowed = [], []
     for video in root.findall("Video"):
         if video.get("type") not in ("movie", "episode"):
             continue
         u, d = session_names(video)
+        title = video.get("title") or ""
         ok = session_allowed(video, users, devices)
-        seen.append({"user": u, "device": d,
-                     "title": video.get("title") or "", "allowed": ok})
-        if ok and match is None:
-            match = parse_session(video)
+        seen.append({"user": u, "device": d, "title": title, "allowed": ok})
+        if ok:
+            allowed.append((session_sort_key(u, d, title), video))
     LAST_SESSIONS[:] = seen
-    return match
+    # Sort before picking: the server's order is not stable, and without this
+    # the card flips between two people's sessions on an arbitrary poll.
+    allowed.sort(key=lambda pair: pair[0])
+    picked = rotate_pick([video for _, video in allowed],
+                         clamp_rotate(s.get("rotateSeconds")))
+    return parse_session(picked) if picked is not None else None
 
 
 def emby_session_names(s):
@@ -888,19 +940,25 @@ def emby_current_session():
     users = USERS | csv_set(settings.get("plexUsers"))
     devices = DEVICES | csv_set(settings.get("plexDevices"))
     sessions = emby_fetch_json("/Sessions")
-    seen, match = [], None
+    seen, allowed = [], []
     for s in sessions:
         item = s.get("NowPlayingItem")
         if not item or item.get("Type") not in ("Movie", "Episode"):
             continue
         u, d = emby_session_names(s)
+        title = item.get("Name") or ""
         ok = emby_session_allowed(s, users, devices)
-        seen.append({"user": u, "device": d,
-                     "title": item.get("Name") or "", "allowed": ok})
-        if ok and match is None:
-            match = s
+        seen.append({"user": u, "device": d, "title": title, "allowed": ok})
+        if ok:
+            allowed.append((session_sort_key(u, d, title), s))
     LAST_SESSIONS[:] = seen
-    if not match:
+    # Emby's /Sessions order tracks activity, so "the first allowed session"
+    # flipped between two people's titles on an arbitrary poll. Sort, then let
+    # the clock decide whose turn it is.
+    allowed.sort(key=lambda pair: pair[0])
+    match = rotate_pick([session for _, session in allowed],
+                        clamp_rotate(settings.get("rotateSeconds")))
+    if match is None:
         return None
     emby_enrich(match.get("NowPlayingItem") or {}, user_id=match.get("UserId"))
     return parse_emby_session(match, extras=emby_extras)
@@ -915,9 +973,8 @@ def migrate_settings(raw):
     if not isinstance(raw, dict):
         raw = {}
     out = {"default": "cast"}
-    for k in GLOBAL_KEYS[1:]:                     # hubIp, plexUsers, plexDevices
-        value = raw.get(k, "")
-        out[k] = value if isinstance(value, str) else ""
+    for k in GLOBAL_KEYS[1:]:        # hubIp, session filters, zip, rotation
+        out[k] = coerce_global(k, raw.get(k, GLOBAL_DEFAULTS[k]))
     if raw.get("default") in PROFILES:
         out["default"] = raw["default"]
 
@@ -998,8 +1055,7 @@ def save_settings(raw, body, profile=None):
         profile = "cast"
     out = {k: v for k, v in raw.items() if k != "profiles"}
     for k in GLOBAL_KEYS[1:]:
-        value = body.get(k, out.get(k, ""))
-        out[k] = value if isinstance(value, str) else ""
+        out[k] = coerce_global(k, body.get(k, out.get(k, GLOBAL_DEFAULTS[k])))
     if not (out["hubIp"] == "" or IP_RE.match(out["hubIp"])):
         out["hubIp"] = ""
     out["weatherZip"] = out["weatherZip"].strip()[:10]
@@ -1403,6 +1459,45 @@ def selftest():
     assert pick({"bob"}, {"chrome"}) is None
     assert pick(set(), {"nope"}) is None
 
+    # Emby rotates too: /Sessions is ordered by activity, so without a sort the
+    # card flips between two people's titles on an arbitrary poll.
+    def emby_two(order):
+        return [
+            {"UserName": "Bob", "DeviceName": "Apple TV", "UserId": "b",
+             "NowPlayingItem": {"Type": "Movie", "Id": "1", "Name": "Jaws"},
+             "PlayState": {}},
+            {"UserName": "alice", "DeviceName": "Pixel 9", "UserId": "a",
+             "NowPlayingItem": {"Type": "Movie", "Id": "2", "Name": "Alien"},
+             "PlayState": {}},
+        ][::order]
+
+    real_fetch, real_load, real_enrich = emby_fetch_json, load_settings, emby_enrich
+    real_parse, real_time = parse_emby_session, time.time
+    try:
+        globals()["emby_enrich"] = lambda item, user_id=None: item
+        globals()["parse_emby_session"] = lambda s, extras=None: {
+            "title": (s.get("NowPlayingItem") or {}).get("Name")}
+        globals()["load_settings"] = lambda profile=None: {
+            "plexUsers": "", "plexDevices": "", "rotateSeconds": 30}
+        picks = {}
+        for label, order in (("normal", 1), ("flipped", -1)):
+            globals()["emby_fetch_json"] = lambda _p, _o=order: emby_two(_o)
+            for bucket, when in (("t0", 0.0), ("t1", 30.0)):
+                globals()["time"].time = lambda _w=when: _w
+                picks[(label, bucket)] = emby_current_session()["title"]
+        # server order must not change the choice, and the clock must
+        for bucket in ("t0", "t1"):
+            assert picks[("normal", bucket)] == picks[("flipped", bucket)], picks
+        assert picks[("normal", "t0")] == "Alien"      # alice sorts before Bob
+        assert picks[("normal", "t1")] == "Jaws"
+        assert len(LAST_SESSIONS) == 2                 # both still reported
+    finally:
+        globals()["time"].time = real_time
+        globals()["emby_fetch_json"] = real_fetch
+        globals()["load_settings"] = real_load
+        globals()["emby_enrich"] = real_enrich
+        globals()["parse_emby_session"] = real_parse
+
     # the settings page reads device names off LAST_SESSIONS, so Emby must
     # report them the way Plex does: DeviceName, falling back to Client
     assert emby_session_names(esessions[1]) == ("Alice", "Living Room TV")
@@ -1469,7 +1564,12 @@ def selftest():
     assert "onesheet" in TEMPLATES
     assert set(PROFILES) == {"cast", "esp"}
     assert GLOBAL_KEYS == ("default", "hubIp", "plexUsers", "plexDevices",
-                           "weatherZip")
+                           "weatherZip", "rotateSeconds")
+    # rotateSeconds is the one global that is not a string
+    assert coerce_global("rotateSeconds", "45") == 45
+    assert coerce_global("rotateSeconds", "junk") == 30
+    assert coerce_global("rotateSeconds", 0) == 0
+    assert coerce_global("hubIp", 12) == ""
     assert set(DENSITY_PRESETS) == {"full", "compact", "minimal"}
     assert DENSITY_PRESETS["full"]["showCast"] is True
     assert DENSITY_PRESETS["compact"]["showCast"] is False
@@ -1602,6 +1702,87 @@ def selftest():
     # and the whole thing survives another migration untouched
     assert migrate_settings(updated) == updated
 
+
+    # Several people can stream at once. /status/sessions has no defined order,
+    # so picking "the first allowed session" made the card flip between them on
+    # any poll where the server reordered. Sort, then rotate on a clock bucket.
+    rows = [("Bob", "Apple TV", "Jaws"),
+            ("alice", "Pixel 9", "Alien"),
+            ("Bob", "apple tv", "Aliens")]
+    assert sorted(rows, key=lambda r: session_sort_key(*r)) == [
+        ("alice", "Pixel 9", "Alien"),
+        ("Bob", "apple tv", "Aliens"),
+        ("Bob", "Apple TV", "Jaws")]           # case-insensitive, total order
+
+    items = ["a", "b", "c"]
+    assert rotate_pick([], 30, now=0) is None
+    assert rotate_pick(["solo"], 30, now=999) == "solo"
+    # rotation is a pure function of the clock, so every display agrees
+    assert rotate_pick(items, 30, now=0) == "a"
+    assert rotate_pick(items, 30, now=29.9) == "a"    # stable within a bucket
+    assert rotate_pick(items, 30, now=30) == "b"
+    assert rotate_pick(items, 30, now=61) == "c"
+    assert rotate_pick(items, 30, now=90) == "a"      # wraps
+    # rotateSeconds = 0 disables rotation: the first session pins
+    assert rotate_pick(items, 0, now=12345) == "a"
+    assert rotate_pick(items, -5, now=12345) == "a"
+
+    assert clamp_rotate(30) == 30 and clamp_rotate(0) == 0
+    assert clamp_rotate("45") == 45                   # settings arrive as text
+    assert clamp_rotate("nonsense") == 30 and clamp_rotate(None) == 30
+    assert clamp_rotate(2) == 5 and clamp_rotate(99999) == 3600   # bounds
+
+    # current_session() must not care what order the server lists sessions in.
+    two = ('<MediaContainer>'
+           '<Video type="movie" title="Alien" ratingKey="1">'
+           '<User title="alice"/><Player title="Pixel 9"/></Video>'
+           '<Video type="movie" title="Jaws" ratingKey="2">'
+           '<User title="Bob"/><Player title="Apple TV"/></Video>'
+           '</MediaContainer>')
+    flipped = ('<MediaContainer>'
+               '<Video type="movie" title="Jaws" ratingKey="2">'
+               '<User title="Bob"/><Player title="Apple TV"/></Video>'
+               '<Video type="movie" title="Alien" ratingKey="1">'
+               '<User title="alice"/><Player title="Pixel 9"/></Video>'
+               '</MediaContainer>')
+    real_fetch, real_parse, real_load = fetch_xml, parse_session, load_settings
+    real_time = time.time
+    try:
+        globals()["parse_session"] = lambda v: {"title": v.get("title")}
+        globals()["load_settings"] = lambda: {"plexUsers": "", "plexDevices": "",
+                                              "rotateSeconds": 30}
+        picks = {}
+        for label, xml in (("normal", two), ("flipped", flipped)):
+            globals()["fetch_xml"] = lambda _p, _x=xml: ET.fromstring(_x)
+            for bucket, when in (("t0", 0.0), ("t1", 30.0), ("t2", 60.0)):
+                globals()["time"].time = lambda _w=when: _w
+                picks[(label, bucket)] = current_session()["title"]
+        # Server order must not change the choice...
+        for bucket in ("t0", "t1", "t2"):
+            assert picks[("normal", bucket)] == picks[("flipped", bucket)], \
+                (bucket, picks)
+        # ...and the clock, not the server, decides whose turn it is.
+        assert picks[("normal", "t0")] == "Alien"      # alice sorts first
+        assert picks[("normal", "t1")] == "Jaws"
+        assert picks[("normal", "t2")] == "Alien"      # wraps
+        assert len(LAST_SESSIONS) == 2                 # both still reported
+
+        # rotateSeconds = 0 pins the first sorted session forever
+        globals()["load_settings"] = lambda: {"plexUsers": "", "plexDevices": "",
+                                              "rotateSeconds": 0}
+        globals()["time"].time = lambda: 99999.0
+        assert current_session()["title"] == "Alien"
+
+        # a device filter narrows the candidates; rotation orders what is left
+        globals()["load_settings"] = lambda: {"plexUsers": "", "plexDevices": "apple tv",
+                                              "rotateSeconds": 30}
+        globals()["time"].time = lambda: 0.0
+        assert current_session()["title"] == "Jaws"
+    finally:
+        globals()["time"].time = real_time
+        globals()["fetch_xml"] = real_fetch
+        globals()["parse_session"] = real_parse
+        globals()["load_settings"] = real_load
     print("selftest ok")
 
 

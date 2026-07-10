@@ -170,6 +170,12 @@ Optional settings:
   page under "Who triggers the marquee." Both backends honor both filters —
   Emby matches a session's `DeviceName` or `Client`, Plex its player's
   title/device/product.
+
+When more than one allowed session is playing, each takes the display in turn.
+**Rotate between sessions** on the settings page sets how long each gets
+(default 30 seconds; 0 pins the first, ordered by user then device). Sessions
+are always sorted before one is picked, so the card never flips at random
+because the server reordered its session list.
 - `TMDB_API_KEY`
 - `POLL_SECONDS` default `5`
 - `SERVE_PORT` default `8084`
