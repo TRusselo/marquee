@@ -903,6 +903,24 @@ def resolve_settings(raw, profile=None):
     return flat
 
 
+def public_settings(raw, profile=None):
+    """One profile's appearance, without the globals.
+
+    /api/settings is CORS-enabled, so any page in the user's browser can read
+    it. A display only needs to know how to draw itself; hubIp, the session
+    filters, and weatherZip stay on the same-origin /settings.json.
+    """
+    return {k: v for k, v in resolve_settings(raw, profile).items()
+            if k not in GLOBAL_KEYS}
+
+
+def query_profile(path):
+    """?profile=<name> from a request path, or None when absent/unknown."""
+    query = urllib.parse.urlsplit(path).query
+    name = urllib.parse.parse_qs(query).get("profile", [None])[0]
+    return name if name in PROFILES else None
+
+
 def load_raw_settings():
     """The on-disk profile schema, migrated and defaulted."""
     try:
@@ -964,7 +982,8 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/settings.json":
-            self._send(json.dumps(load_settings()), "application/json")
+            self._send(json.dumps(load_settings(query_profile(self.path))),
+                       "application/json")
         elif path == "/devices":
             self._send(json.dumps(scan_devices("refresh" in self.path)),
                        "application/json")
@@ -982,6 +1001,13 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception:
                 body = json.dumps({"playing": False})
             self._send(body, "application/json", cors=True)
+        elif path == "/api/settings":
+            # Read-only, CORS-enabled: an ESP/ESPHome panel fetches the layout
+            # and element visibility for its own profile. Appearance only --
+            # see public_settings().
+            self._send(json.dumps(public_settings(load_raw_settings(),
+                                                  query_profile(self.path))),
+                       "application/json", cors=True)
         elif path == "/api/healthz":
             self._send(json.dumps({"ok": True, "version": VERSION}),
                        "application/json", cors=True)
@@ -1398,6 +1424,21 @@ def selftest():
     # an explicit default is honored
     picked = migrate_settings({"default": "esp"})
     assert resolve_settings(picked, None)["template"] == "onesheet"
+
+    # ?profile= picks a profile; anything unknown falls back to the default
+    assert query_profile("/settings.json") is None
+    assert query_profile("/settings.json?profile=esp") == "esp"
+    assert query_profile("/api/settings?profile=cast&x=1") == "cast"
+    assert query_profile("/api/settings?profile=bogus") is None
+    assert query_profile("/api/settings?nope=1") is None
+
+    # /api/settings is CORS-enabled, so it must not leak the globals:
+    # the Hub's IP and the session filters are nobody else's business.
+    pub = public_settings(raw, "esp")
+    assert not set(GLOBAL_KEYS) & set(pub), set(GLOBAL_KEYS) & set(pub)
+    assert pub["template"] == "onesheet"     # a panel still learns its layout
+    assert pub["orientation"] == "portrait"
+    assert pub["showCast"] is False
 
     print("selftest ok")
 
