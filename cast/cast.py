@@ -105,7 +105,7 @@ CAST_MAX = 6            # top-billed actors shown on the card
 HEADSHOT_PX = (150, 150)
 
 PROFILES = ("cast", "esp")            # one Cast/Nest display, one ESP panel
-GLOBAL_KEYS = ("default", "hubIp", "plexUsers", "plexDevices")
+GLOBAL_KEYS = ("default", "hubIp", "plexUsers", "plexDevices", "weatherZip")
 DENSITIES = ("full", "compact", "minimal", "custom")
 ORIENTATIONS = ("auto", "landscape", "portrait")
 
@@ -132,11 +132,13 @@ PROFILE_BASE = {
     "theme": "amber",
     "accent": "",
     "titleFont": "system",
+    "bodyFont": "system",
     "posterSide": "right",
     "clockFormat": "12h",
     "clockSeconds": False,
     "showContentRating": True, "showProgress": True,
     "backdrop": True, "logo": True,
+    "showWeather": False, "weatherUnits": "f",
     "blockLayout": {},
     "density": "full",
     "orientation": "auto",
@@ -1310,7 +1312,8 @@ def selftest():
         "http://192.168.1.10:8084/now-playing.json"
     assert "onesheet" in TEMPLATES
     assert set(PROFILES) == {"cast", "esp"}
-    assert GLOBAL_KEYS == ("default", "hubIp", "plexUsers", "plexDevices")
+    assert GLOBAL_KEYS == ("default", "hubIp", "plexUsers", "plexDevices",
+                           "weatherZip")
     assert set(DENSITY_PRESETS) == {"full", "compact", "minimal"}
     assert DENSITY_PRESETS["full"]["showCast"] is True
     assert DENSITY_PRESETS["compact"]["showCast"] is False
@@ -1321,13 +1324,23 @@ def selftest():
     assert profile_defaults("minimal")["showProgress"] is True   # always-on element
     assert profile_defaults("full")["orientation"] == "auto"
 
+    # Every flat setting must have a home, or migrating a user's saved file
+    # would silently drop it. An upstream merge that adds a key trips this.
+    homed = set(GLOBAL_KEYS) | set(PROFILE_BASE) | set(DENSITY_PRESETS["full"])
+    assert not set(DEFAULT_SETTINGS) - homed, set(DEFAULT_SETTINGS) - homed
+
     # legacy flat settings migrate into profiles.cast; globals lift to top level
     legacy = {"hubIp": "10.0.0.5", "plexUsers": "alice", "plexDevices": "tv",
+              "weatherZip": "90210", "bodyFont": "oswald", "showWeather": True,
               "template": "street", "theme": "concrete", "showPlot": False,
               "blockLayout": {"identity": {"x": 5}}}
     mig = migrate_settings(legacy)
     assert mig["default"] == "cast"
     assert mig["hubIp"] == "10.0.0.5" and mig["plexUsers"] == "alice"
+    assert mig["weatherZip"] == "90210"          # one location, every profile
+    assert mig["profiles"]["cast"]["bodyFont"] == "oswald"
+    assert mig["profiles"]["cast"]["showWeather"] is True
+    assert mig["profiles"]["esp"]["showWeather"] is False
     assert mig["profiles"]["cast"]["template"] == "street"
     assert mig["profiles"]["cast"]["theme"] == "concrete"
     assert mig["profiles"]["cast"]["showPlot"] is False
