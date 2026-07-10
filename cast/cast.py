@@ -79,6 +79,10 @@ TEMPLATES = ("spotlight", "split", "hero", "lowerthird", "bigclock", "street",
 TITLE_FONTS = ("system", "bebas", "oswald", "playfair", "cinzel", "grotesk")
 ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+# The flat settings shape the card and settings pages consume. Settings are
+# stored per-profile now (see PROFILE_BASE / migrate_settings), but this stays
+# the canonical list of every key a page may read, and selftest asserts each
+# one still has a home.
 DEFAULT_SETTINGS = {
     "hubIp": "",
     "template": "spotlight",
@@ -903,6 +907,57 @@ def resolve_settings(raw, profile=None):
     return flat
 
 
+def sanitize_profile(seed, body):
+    """Validate a flat settings body into a complete profile dict."""
+    p = dict(seed)
+    p.update({k: v for k, v in body.items() if k in seed})
+    if p["template"] not in TEMPLATES:
+        p["template"] = "spotlight"
+    if p["theme"] not in THEMES:
+        p["theme"] = "amber"
+    if p["titleFont"] not in TITLE_FONTS:
+        p["titleFont"] = "system"
+    if p["bodyFont"] not in TITLE_FONTS:
+        p["bodyFont"] = "system"
+    if p["posterSide"] not in ("left", "right"):
+        p["posterSide"] = "right"
+    if p["clockFormat"] not in ("12h", "24h"):
+        p["clockFormat"] = "12h"
+    if p["weatherUnits"] not in ("f", "c"):
+        p["weatherUnits"] = "f"
+    if p["density"] not in DENSITIES:
+        p["density"] = "full"
+    if p["orientation"] not in ORIENTATIONS:
+        p["orientation"] = "auto"
+    if not (isinstance(p["accent"], str)
+            and (p["accent"] == "" or ACCENT_RE.match(p["accent"]))):
+        p["accent"] = ""
+    for key in seed:
+        if key.startswith("show") or key in ("backdrop", "logo", "clockSeconds"):
+            p[key] = bool(p[key])
+    p["blockLayout"] = clean_block_layout(p["blockLayout"])
+    return p
+
+
+def save_settings(raw, body, profile=None):
+    """Merge a flat settings body into `raw`: globals up top, appearance into
+    the named profile. Other profiles are left untouched."""
+    if profile not in PROFILES:
+        profile = raw.get("default", "cast")
+    if profile not in PROFILES:
+        profile = "cast"
+    out = {k: v for k, v in raw.items() if k != "profiles"}
+    for k in GLOBAL_KEYS[1:]:
+        value = body.get(k, out.get(k, ""))
+        out[k] = value if isinstance(value, str) else ""
+    if not (out["hubIp"] == "" or IP_RE.match(out["hubIp"])):
+        out["hubIp"] = ""
+    out["weatherZip"] = out["weatherZip"].strip()[:10]
+    out["profiles"] = dict(raw["profiles"])
+    out["profiles"][profile] = sanitize_profile(raw["profiles"][profile], body)
+    return out
+
+
 def public_settings(raw, profile=None):
     """One profile's appearance, without the globals.
 
@@ -1026,36 +1081,9 @@ class WebHandler(BaseHTTPRequestHandler):
             return self._send("not found", "text/plain", 404)
         try:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            merged = {**DEFAULT_SETTINGS,
-                      **{k: v for k, v in body.items() if k in DEFAULT_SETTINGS}}
-            if merged["posterSide"] not in ("left", "right"):
-                merged["posterSide"] = "right"
-            if merged["theme"] not in THEMES:
-                merged["theme"] = "amber"
-            if merged["template"] not in TEMPLATES:
-                merged["template"] = "spotlight"
-            if merged["clockFormat"] not in ("12h", "24h"):
-                merged["clockFormat"] = "12h"
-            if merged["titleFont"] not in TITLE_FONTS:
-                merged["titleFont"] = "system"
-            if merged["bodyFont"] not in TITLE_FONTS:
-                merged["bodyFont"] = "system"
-            for k in ("plexUsers", "plexDevices", "weatherZip"):
-                if not isinstance(merged[k], str):
-                    merged[k] = ""
-            merged["weatherZip"] = merged["weatherZip"].strip()[:10]
-            if merged["weatherUnits"] not in ("f", "c"):
-                merged["weatherUnits"] = "f"
-            merged["showWeather"] = bool(merged["showWeather"])
-            merged["clockSeconds"] = bool(merged["clockSeconds"])
-            if not (isinstance(merged["accent"], str)
-                    and (merged["accent"] == "" or ACCENT_RE.match(merged["accent"]))):
-                merged["accent"] = ""
-            if not (isinstance(merged["hubIp"], str)
-                    and (merged["hubIp"] == "" or IP_RE.match(merged["hubIp"]))):
-                merged["hubIp"] = ""
-            merged["blockLayout"] = clean_block_layout(merged["blockLayout"])
-            atomic_write(SETTINGS_PATH, json.dumps(merged))
+            updated = save_settings(load_raw_settings(), body,
+                                    query_profile(self.path))
+            atomic_write(SETTINGS_PATH, json.dumps(updated))
             self._send(json.dumps({"ok": True}), "application/json")
         except Exception as e:
             self._send(json.dumps({"ok": False, "error": str(e)}), "application/json", 400)
@@ -1077,7 +1105,7 @@ def loop():
     if missing:
         raise SystemExit("Missing required environment variables: " + ", ".join(missing))
     if not os.path.exists(SETTINGS_PATH):
-        atomic_write(SETTINGS_PATH, json.dumps(DEFAULT_SETTINGS))
+        atomic_write(SETTINGS_PATH, json.dumps(migrate_settings({})))
     threading.Thread(target=serve_web, daemon=True).start()
     print(f"Marquee {VERSION} ready on :{SERVE_PORT} (card: /image, settings: /)",
           flush=True)
@@ -1439,6 +1467,47 @@ def selftest():
     assert pub["template"] == "onesheet"     # a panel still learns its layout
     assert pub["orientation"] == "portrait"
     assert pub["showCast"] is False
+
+    # a save splits the settings page's flat body: globals up top, the rest
+    # into the named profile, with every value validated
+    base = migrate_settings({})
+    body = {"hubIp": "10.0.0.9", "plexUsers": "bob", "theme": "bogus",
+            "weatherZip": "  90210-1234567  ", "weatherUnits": "kelvin",
+            "template": "onesheet", "density": "compact", "orientation": "portrait",
+            "posterSide": "sideways", "titleFont": "comic", "bodyFont": "comic",
+            "clockFormat": "25h", "accent": "red", "showCast": False,
+            "showTagline": True, "showWeather": "yes", "clockSeconds": "yes",
+            "blockLayout": {"identity": {"x": 5}, "bad": {}}}
+    updated = save_settings(base, body, "esp")
+    assert updated["hubIp"] == "10.0.0.9" and updated["plexUsers"] == "bob"
+    assert updated["weatherZip"] == "90210-1234"   # trimmed and capped at 10
+    esp = updated["profiles"]["esp"]
+    assert esp["theme"] == "amber"            # invalid -> default
+    assert esp["template"] == "onesheet"      # valid, and newly registered
+    assert esp["density"] == "compact" and esp["orientation"] == "portrait"
+    assert esp["posterSide"] == "right" and esp["titleFont"] == "system"
+    assert esp["bodyFont"] == "system"        # upstream v1.6.0 key, validated
+    assert esp["weatherUnits"] == "f"         # invalid -> default
+    assert esp["clockFormat"] == "12h" and esp["accent"] == ""
+    assert esp["showCast"] is False and esp["showTagline"] is True
+    assert esp["showWeather"] is True         # coerced to bool
+    assert esp["clockSeconds"] is True        # coerced to bool
+    assert esp["blockLayout"] == {"identity": {"x": 5}}   # unknown block dropped
+    # writing esp must not disturb cast
+    assert updated["profiles"]["cast"] == base["profiles"]["cast"]
+    # globals are never stored inside a profile
+    assert not set(GLOBAL_KEYS) & set(esp)
+    # a bad hubIp is rejected rather than stored
+    assert save_settings(base, {"hubIp": "not-an-ip"}, "cast")["hubIp"] == ""
+    # bad density/orientation fall back
+    bad = save_settings(base, {"density": "huge", "orientation": "sideways"}, "cast")
+    assert bad["profiles"]["cast"]["density"] == "full"
+    assert bad["profiles"]["cast"]["orientation"] == "auto"
+    # a save is round-trippable: what you POST is what /settings.json serves
+    assert resolve_settings(updated, "esp")["template"] == "onesheet"
+    assert resolve_settings(updated, "esp")["hubIp"] == "10.0.0.9"
+    # and the whole thing survives another migration untouched
+    assert migrate_settings(updated) == updated
 
     print("selftest ok")
 
