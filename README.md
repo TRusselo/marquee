@@ -150,13 +150,51 @@ Required environment variables:
 ### Choosing the display target
 
 - `CAST_TARGET` — `nest` (default, Google Cast via `catt`) or `esp32`.
-- For a Cast device (default): open the settings page and press **Scan** —
-  Marquee discovers Google Cast devices on your LAN and you pick your display
-  from a dropdown. (`HUB_IP` still works as an env fallback; discovery needs the
-  container on the same network/VLAN as the display, which host networking gives
-  you.)
+- For a Cast device (default): open the settings page and either press **Scan**
+  to pick a discovered device, or **type the display's IP address**. See
+  [Finding your cast device](#finding-your-cast-device) below.
 - For an ESP32: set `ESP32_HOST` (and optionally `ESP32_PORT`, default `80`).
   See [ESP32_SETUP.md](ESP32_SETUP.md) and the ESPHome guides below.
+
+### Finding your cast device
+
+**Scan is a convenience, not the source of truth.** Press it and Marquee runs
+`catt scan`, which discovers Google Cast devices by **mDNS** — multicast DNS,
+the same mechanism behind `.local` hostnames. Whatever it finds is offered as
+suggestions in the Cast device field.
+
+mDNS is multicast, and multicast is the first thing networks drop. It commonly
+fails when:
+
+- the container is on a Docker bridge network rather than the host's (mDNS does
+  not cross the NAT) — use `network_mode: host`, as `compose.yaml` does;
+- the display sits on a different VLAN or subnet from the server, and the router
+  does not forward multicast or run an mDNS reflector/repeater;
+- an access point has *AP isolation* or *multicast filtering* enabled — common
+  defaults on mesh and enterprise gear;
+- IGMP snooping is on and no querier is present, so multicast never reaches the
+  wired segment.
+
+A device that scan cannot see is usually still perfectly reachable. Discovery
+and connection are separate: `catt` talks to a Cast device directly on TCP port
+`8009`, which does not involve mDNS at all. This is why the Cast device field
+takes a **typed IP address** — on a LAN with several Nest displays, a scan that
+returns only one unrelated TV is a routine outcome, not a broken install.
+
+To find a display's IP: check your router's DHCP leases, or open the Google Home
+app → tap the device → gear icon → *Device information*. You can sanity-check it
+before saving:
+
+```sh
+curl -s http://DISPLAY-IP:8008/setup/eureka_info | head -c 200
+```
+
+A Cast device answers with JSON containing its `name`. Nothing responds, or the
+port is closed? Then the IP is wrong, or the device is off the network — that is
+worth knowing *before* you blame Marquee.
+
+Give the display a DHCP reservation. An IP typed into the settings page is
+static configuration; if the lease moves, casting stops until you update it.
 
 Optional settings:
 
@@ -176,6 +214,29 @@ When more than one allowed session is playing, each takes the display in turn.
 (default 30 seconds; 0 pins the first, ordered by user then device). Sessions
 are always sorted before one is picked, so the card never flips at random
 because the server reordered its session list.
+
+#### These three env vars are defaults, not overrides
+
+`HUB_IP`, `MEDIA_USERS`, and `MEDIA_DEVICES` also exist as fields on the settings
+page, and the rule for all three is the same:
+
+> **Type a value to use it. Leave the field empty to inherit the container's.**
+
+The settings page shows each env value as a greyed **placeholder** — `jamison
+(from MEDIA_USERS)` — so an empty box reads as *inheriting this*, not *nothing is
+set*. Typing a value **replaces** the env var; clearing the box hands control
+back to it.
+
+That visibility is the point. Marquee previously *merged* the env list with the
+settings list, so `MEDIA_USERS=jamison` in your Compose file left the Users field
+looking empty while every other user's session was silently ignored — and no
+amount of editing the field could lift it. An invisible filter is a filter that
+lies about itself.
+
+One consequence worth stating: while an env var is set, an empty field means
+*inherit*, so you cannot express "filter nobody" from the UI. Unset the env var
+if you want the settings page to be the whole story.
+
 - `TMDB_API_KEY`
 - `POLL_SECONDS` default `5`
 - `SERVE_PORT` default `8084`

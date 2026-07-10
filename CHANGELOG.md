@@ -59,6 +59,37 @@ filters block, so you can copy the exact device names.
 - Merged upstream v1.6.0 (session filters, Street template, Vibes, weather,
   card font, export/import, mobile settings).
 
+### Type your display's IP when the scan can't find it
+
+The Cast device field was a dropdown fed only by `catt scan`, which discovers
+devices over **mDNS**. Multicast is the first thing networks drop — a Docker
+bridge network, a VLAN without an mDNS reflector, AP isolation, IGMP snooping
+with no querier — and a display that discovery cannot see is usually still
+perfectly reachable, because `catt` connects straight to TCP port 8009 and never
+uses mDNS to do it. On a LAN with several Nest displays, a scan that returns one
+unrelated TV is a routine outcome, not a broken install.
+
+So the field takes a typed IP now, with the scan results offered as suggestions.
+A non-IP is flagged as you type, and the server validates independently. The
+README explains where discovery fails and how to check an address before saving.
+
+### Env vars are defaults you can see, not overrides you can't
+
+`HUB_IP`, `MEDIA_USERS`, and `MEDIA_DEVICES` all have settings-page fields. Now
+they all follow one rule: **type a value to use it, leave the field empty to
+inherit the container's**. Each env value appears as a greyed placeholder —
+`jamison (from MEDIA_USERS)` — so an empty box reads as *inheriting this*.
+
+Previously the user and device filters **merged** with the env var instead of
+replacing it. `MEDIA_USERS=jamison` in a Compose file left the Users field
+looking empty while every other session was silently ignored, and clearing the
+field changed nothing, because the page could only add names to what the env var
+already allowed. `HUB_IP` alone behaved correctly. Now all three match it.
+
+The new `/env-defaults` route serves those three values and nothing else — an
+allowlist, so a future credential-shaped variable cannot leak into it by
+default.
+
 ### More than one person is watching
 
 When two people stream at once, the card used to flip between their titles at

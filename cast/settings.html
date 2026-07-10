@@ -312,9 +312,9 @@
         <button class="secondary" id="scan" type="button">Scan</button>
       </div>
     </div>
-    <div class="row"><label>Plex users<small>Comma-separated usernames. Empty = everyone, including shared and home users.</small></label>
+    <div class="row"><label>Users<small>Comma-separated usernames. Empty = everyone, including shared and home users — unless MEDIA_USERS is set in the container, in which case that applies. Typing here replaces it.</small></label>
       <input type="text" id="users" class="mini" placeholder="e.g. jamison" autocomplete="off"></div>
-    <div class="row"><label>Devices<small>Comma-separated player names — only sessions on these devices cast. Empty = any device (your phone at work included).</small></label>
+    <div class="row"><label>Devices<small>Comma-separated player names — only sessions on these devices cast. Empty = any device (your phone at work included), unless MEDIA_DEVICES is set. Typing here replaces it.</small></label>
       <input type="text" id="devices" class="mini" placeholder="e.g. Living Room TV" autocomplete="off"></div>
     <div class="row"><label>Rotate between sessions<small>When more than one allowed session is playing, each takes the display for this many seconds. 0 pins the first one (alphabetical by user, then device).</small></label>
       <input type="number" id="rotate" class="mini" min="0" max="3600" step="5" placeholder="30"></div>
@@ -546,11 +546,29 @@
       : 'No devices found — the scan needs the container on the same network as the Hub.';
   });
 
+  // Values the container was started with. They are never merged into cfg --
+  // they only become placeholders, so an empty field reads as "inheriting this"
+  // instead of "nothing is set". Typing a value overrides the env var.
+  async function loadEnvHints() {
+    let env = {};
+    try { env = await (await fetch('/env-defaults')).json(); } catch (e) { return; }
+    const hint = (sel, value, name) => {
+      if (!value) return;
+      $(sel).placeholder = `${value}  (from ${name})`;
+      $(sel).title = `Inherited from the ${name} environment variable. `
+        + 'Type a value here to override it.';
+    };
+    hint('#hub', env.hubIp, 'HUB_IP');
+    hint('#users', env.plexUsers, 'MEDIA_USERS');
+    hint('#devices', env.plexDevices, 'MEDIA_DEVICES');
+  }
+
   async function load() {
     try {
       const s = await (await fetch('/settings.json')).json();
       cfg = { ...cfg, ...s };
     } catch (e) {}
+    await loadEnvHints();
     if (!TEMPLATES.includes(cfg.template)) cfg.template = 'spotlight';
     document.querySelectorAll('input[data-k]').forEach(i => {
       const v = cfg[i.dataset.k];
