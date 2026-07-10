@@ -9,16 +9,25 @@
 
 Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex or Emby** now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the display to ambient mode when playback stops. It can also drive an **ESP32/ESPHome** display, which renders the card by polling Marquee's read-only JSON API.
 
-![Marquee Split template](docs/screenshots/split.jpg)
+![One app, many looks — templates × themes × fonts](docs/screenshots/variety.jpg)
+
+*Same app, nine looks: six templates × eight themes × six fonts × any accent color.*
+
+With your own library it looks like this — real posters, backdrops, and clear-logos straight from Plex:
+
+| | |
+|:---:|:---:|
+| ![Street with a real library](docs/screenshots/live-street.jpg) | ![Spotlight with a real library](docs/screenshots/live-spotlight.jpg) |
 
 ## Templates
 
-Five designed layouts, switchable live from the settings page:
+Six designed layouts, switchable live from the settings page:
 
 | | |
 |:---:|:---:|
 | ![Spotlight](docs/screenshots/spotlight.jpg) **Spotlight** — poster beside the full metadata stack | ![Hero](docs/screenshots/hero.jpg) **Hero** — big centered title over the backdrop |
 | ![Lower Third](docs/screenshots/lowerthird.jpg) **Lower Third** — broadcast-style chyron over full-bleed art | ![Big Clock](docs/screenshots/bigclock.jpg) **Big Clock** — ambient timepiece with a now-playing strip |
+| ![Street](docs/screenshots/street.jpg) **Street** — a living night scene: your poster in a bulb-lit marquee, the movie logo sprayed on brick | ![Split](docs/screenshots/split.jpg) **Split** — hard split: full-height art wall beside the info column |
 
 Every template is built from the same blocks — title/logo identity, grouped ratings, metadata chips, plot, progress, clock, poster — so your show/hide toggles, themes, custom accent color, and block position tweaks carry across all of them.
 
@@ -27,11 +36,16 @@ Every template is built from the same blocks — title/logo identity, grouped ra
 ## Features
 
 - Live now-playing card from **Plex or Emby** (switchable with one env var),
-  with five designed templates: Spotlight, Split, Hero, Lower Third, and Big Clock.
-- Four themes plus a custom accent color, 12/24-hour clock styles, and
-  per-block show/hide toggles.
-- A drag-and-slider editor for moving, sizing, and scaling each card block,
-  with an instant demo preview.
+  with six designed templates: Spotlight, Split, Hero, Lower Third, Big Clock,
+  and Street (animated marquee bulbs and all).
+- Eight themes, one-tap Vibe presets, a custom accent color, five title
+  fonts, a card font, 12/24-hour clock styles, and per-block show/hide toggles.
+- Export and import your whole setup as text, so a look can be shared.
+- Session filters: limit casting to your users and your devices, live
+  from the settings page — shared users no longer take over the display.
+- A drag-and-slider editor for moving, sizing, justifying, and scaling each
+  card block, with an instant demo preview featuring original fictional
+  films (no copyrighted art).
 - Persisted settings, health checks, and a Docker-first deployment path.
 - **Display targets:** Google Cast devices with a screen (Nest Hub, Chromecast)
   with clean idle handoff, plus an **ESP32/ESPHome** path that polls
@@ -173,6 +187,13 @@ Nest Hub plays its connect sound. That chime comes from the device, not from
 Marquee, and there's a switch for it: open the **Google Home** app → tap
 your Hub → **Settings (gear) → Accessibility** → turn off **Play sounds on
 start/end of casting**. One-time change; casting is silent afterwards.
+
+## Community Forks & Related Projects
+
+- [TRusselo's fork](https://github.com/TRusselo/marquee) — exploring Emby
+  support, ESP32/ESPHome displays, Home Assistant integration, and vertical
+  poster views. Independent project, not maintained or supported here, but
+  worth a look if that's your stack.
 
 ## Development
 

@@ -38,7 +38,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.4.0"
+VERSION = "1.6.0"
 HUB_IP = os.environ.get("HUB_IP", "")
 PAGE_URL = os.environ.get("PAGE_URL", "")
 PLEX = os.environ.get("PLEX_HOST", "").rstrip("/")
@@ -85,6 +85,7 @@ DEFAULT_SETTINGS = {
     "theme": "amber",
     "accent": "",
     "titleFont": "system",
+    "bodyFont": "system",
     "posterSide": "right",
     "clockFormat": "12h",
     "clockSeconds": False,
@@ -93,11 +94,12 @@ DEFAULT_SETTINGS = {
     "showProgress": True, "showClock": True,
     "backdrop": True, "logo": True,
     "plexUsers": "", "plexDevices": "",
+    "showWeather": False, "weatherZip": "", "weatherUnits": "f",
     "blockLayout": {},
 }
 
 EDITABLE_BLOCKS = ("clock", "identity", "meta", "plot", "ratings",
-                   "progress", "poster")
+                   "progress", "poster", "stinger")
 
 CAST_MAX = 6            # top-billed actors shown on the card
 HEADSHOT_PX = (150, 150)
@@ -307,20 +309,30 @@ def device_hide():
     return esp32_hide() if TARGET == "esp32" else nest_hide()
 
 
-_wx_cache = {"at": 0.0, "loc": "", "data": {}}
+_wx_cache = {"at": 0.0, "zip": None, "loc": "", "data": {}}
 
 
 def weather():
-    """Current conditions for the card's Faze mode, via Open-Meteo (free, no
-    API key). Location is geolocated once from the server's public IP."""
-    if time.time() - _wx_cache["at"] < 900 and _wx_cache["data"]:
+    """Current conditions via Open-Meteo (free, no API key). Location comes
+    from the ZIP in settings (zippopotam.us geocode) or, when blank, from the
+    server's public IP. Refreshes every 15 minutes."""
+    zip_code = re.sub(r"[^0-9]", "", load_settings().get("weatherZip") or "")[:5]
+    fresh = time.time() - _wx_cache["at"] < 900
+    if fresh and _wx_cache["zip"] == zip_code and _wx_cache["data"]:
         return _wx_cache["data"]
     try:
-        if not _wx_cache["loc"]:
-            with urllib.request.urlopen(
-                    "http://ip-api.com/json/?fields=lat,lon", timeout=10) as r:
-                j = json.load(r)
-                _wx_cache["loc"] = f"{j['lat']},{j['lon']}"
+        if _wx_cache["zip"] != zip_code or not _wx_cache["loc"]:
+            if zip_code:
+                with urllib.request.urlopen(
+                        f"https://api.zippopotam.us/us/{zip_code}", timeout=10) as r:
+                    p = json.load(r)["places"][0]
+                    _wx_cache["loc"] = f"{p['latitude']},{p['longitude']}"
+            else:
+                with urllib.request.urlopen(
+                        "http://ip-api.com/json/?fields=lat,lon", timeout=10) as r:
+                    j = json.load(r)
+                    _wx_cache["loc"] = f"{j['lat']},{j['lon']}"
+            _wx_cache["zip"] = zip_code
         lat, lon = _wx_cache["loc"].split(",")
         url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}"
                f"&longitude={lon}&current=weather_code,is_day,temperature_2m")
@@ -978,9 +990,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 merged["clockFormat"] = "12h"
             if merged["titleFont"] not in TITLE_FONTS:
                 merged["titleFont"] = "system"
-            for k in ("plexUsers", "plexDevices"):
+            if merged["bodyFont"] not in TITLE_FONTS:
+                merged["bodyFont"] = "system"
+            for k in ("plexUsers", "plexDevices", "weatherZip"):
                 if not isinstance(merged[k], str):
                     merged[k] = ""
+            merged["weatherZip"] = merged["weatherZip"].strip()[:10]
+            if merged["weatherUnits"] not in ("f", "c"):
+                merged["weatherUnits"] = "f"
+            merged["showWeather"] = bool(merged["showWeather"])
             merged["clockSeconds"] = bool(merged["clockSeconds"])
             if not (isinstance(merged["accent"], str)
                     and (merged["accent"] == "" or ACCENT_RE.match(merged["accent"]))):

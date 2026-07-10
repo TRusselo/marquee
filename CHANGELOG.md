@@ -27,7 +27,35 @@ The card page does not render these fields yet — that lands with the layout wo
 
 - `MEDIA_DEVICES` joins `MEDIA_USERS` (with `PLEX_DEVICES`/`PLEX_USERS` as
   fallbacks). Device filtering applies to the Plex path only for now.
-- Merged upstream v1.4.0 (session filters, Street template, Vibes, weather).
+- Merged upstream v1.6.0 (session filters, Street template, Vibes, weather,
+  card font, export/import, mobile settings).
+
+## 1.6.0 — 2026-07-09
+
+### Share your look
+
+- **Export / Import**: two buttons next to Save. Export copies your whole
+  setup as text; Import pastes someone else's and applies it (your cast
+  device stays yours). Post your look, let people steal it.
+
+### Mobile
+
+- The settings page works properly on phones now — no more sideways
+  overflow — and the **live preview rides the bottom of the screen**, so
+  stepping vibes, flipping toggles, and changing fonts is always visible
+  while you scroll the controls.
+
+### Type
+
+- **Card font** joins Title font: pick a face for everything else — plot,
+  metadata, clock. Per-element size still lives on the block editor's
+  Size slider.
+
+### Odds & ends
+
+- Street's pay phone is retired.
+- `?demo=N` pins a demo film again (and holds through the rotation timer).
+- README leads with a variety collage and real-library screenshots.
 
 ## 1.4.0 — 2026-07-08
 
@@ -53,10 +81,6 @@ The card page does not render these fields yet — that lands with the layout wo
   poster, backdrop, and logo art; the preview picks one at random per load,
   and pure demo mode (`/image?demo`) rotates every 20 seconds.
   `?demo=N` pins a film. Roughly 70KB lighter than the old embedded art.
-- Fifth film: *Justafaze* — a graffiti-nerd documentary where the quotes are
-  part of the tag ("it's ironic because it's not"). Weighted rotation makes it
-  the rare pull — films carry a `weight`, and Justafaze shows a third as
-  often as the rest.
 
 ### Street template & vibes
 
@@ -74,20 +98,6 @@ The card page does not render these fields yet — that lands with the layout wo
   Trail, Back Alley, Gold Star, Dollar Bin, Simulation ("we're all just
   programming ourselves"), and Third Act ("the universe is on its final
   reel"). Tap one, tweak, save.
-
-### Faze mode (the personal cut)
-
-- `?justafaze=1982` on the card URL unlocks a personal edition of Street:
-  the writer himself is out on the sidewalk spray-painting whatever's
-  playing — the clear-logo on the wall is his work in progress — while the
-  marquee (holding the live Plex poster) hangs at a slight tilt. Smoke
-  creeps from a manhole, heavier in fog.
-- Live local weather, no API key: the container asks Open-Meteo (location
-  auto-detected once from the server IP, cached 15 min, `/weather`
-  endpoint) and the card renders rain, snow, fog, or overcast to match
-  what's outside. Real day/night too — daylight raises the wall and rests
-  the bulbs. `?wx=rain|snow|fog|cloud` and `?day=1|0` force conditions.
-- Justafaze is est. 1982 now, as it always was.
 
 ### Preview & accent
 
