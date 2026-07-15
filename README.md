@@ -7,19 +7,21 @@
 
 Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex, Emby, or Jellyfin** now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the display to ambient mode when playback stops. It can also drive an **ESP32/ESPHome** display, which renders the card by polling Marquee's read-only JSON API.
 
-> ### ⚠️ This is an untested test branch
+> ### ⚠️ This is a test branch
 >
 > Upstream [Jamisonfitz/marquee](https://github.com/Jamisonfitz/marquee) is the
 > original — Plex + Google Cast, released and working. Everything below that
 > isn't Emby, ESP32, or a vertical poster view is his work, and this fork
 > tracks his releases (currently **v1.6.0**).
 >
-> The additions in this fork are **new, unreleased, and not verified in a real
-> deployment.** They pass `python cast/cast.py --selftest`, and the Emby/Jellyfin
-> parser has been run against live Emby and Jellyfin servers; that is the whole
-> extent of it. **No ESP32, no display panel, and no Cast device has ever run
-> this code.** If you came here from upstream's README looking for Emby, Jellyfin,
-> or ESP32, you are looking at a work in progress, not a drop-in replacement.
+> The additions here are **new and unreleased.** How far each has been proven:
+> the whole app passes `python cast/cast.py --selftest`; the **Jellyfin** path
+> has been run end to end — live Jellyfin 10.11 server through to the card
+> rendering on a real Google Nest Hub; the **Emby** parser has been run against a
+> live Emby server (same code path as Jellyfin, but not yet watched on a display).
+> **The ESP32 / ESPHome display path has never run on hardware.** If you came
+> here from upstream's README looking for Emby, Jellyfin, or ESP32, treat this as
+> a work in progress, not a drop-in replacement.
 >
 > What's added here:
 >
