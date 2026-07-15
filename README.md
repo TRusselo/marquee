@@ -248,7 +248,8 @@ if you want the settings page to be the whole story.
 - `POLL_SECONDS` default `5`
 - `SERVE_PORT` default `8084`
 - `REPO_DIR` — the container sets `/app` (the code's own default is `/repo`)
-- `DATA_DIR` — the container sets `/config` (defaults to `REPO_DIR/output`)
+- `DATA_DIR` — the container sets `/config` (the code's own default is
+  `REPO_DIR/output`)
 
 Health status is available at `/healthz` and includes the version. A read-only
 card-state API is at `/api/now-playing.json` (CORS-enabled) for ESP32/ESPHome/HA.

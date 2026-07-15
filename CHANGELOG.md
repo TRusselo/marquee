@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 — 2026-07-14
+
+### The Hub no longer sits on a blank screen
+
+Marquee decided whether to cast by asking the Hub whether the DashCast app was
+loaded. That answers the wrong question: a Hub whose card page has died — it
+crashed, reloaded into nothing, or was left holding a stale page — keeps
+reporting DashCast forever. Marquee concluded the card was already up and did
+nothing, silently, while the display showed nothing. There was no error, and
+nothing in the log.
+
+The card fetches `/now-playing.json` every `POLL_SECONDS`, so the server already
+knew whether the page was alive; it just wasn't looking. That fetch is now
+timestamped, and a card silent for longer than 45 seconds is treated as gone and
+re-cast. A page cast moments ago gets one window to load before it counts.
+
+`/healthz` reports `cardPollAgo`, `cardAlive`, and `cardGrace`, so a display
+showing a dead page is now visible from outside the container — which matters,
+because per-request logging is suppressed.
 
 ### Jellyfin joins Emby
 
@@ -10,10 +28,9 @@
 `/Items?Ids=…&UserId=…&Fields=…`, and the image routes — are still
 byte-for-byte compatible, so Jellyfin rides the existing Emby code path unchanged
 rather than duplicating it. Verified end to end against a live Jellyfin 10.11
-server, end to end: session pick, enrichment
-(People/UserData/Taglines/Chapters), poster/backdrop/logo/cast-headshot
-downloads, and the card rendering on a real Google Nest Hub — the same
-end-to-end bar the Emby backend has already cleared.
+server: session pick, enrichment (People/UserData/Taglines/Chapters),
+poster/backdrop/logo/cast-headshot downloads, and the card rendering on a real
+Google Nest Hub — the same end-to-end bar the Emby backend has already cleared.
 
 ### Card enrichment — data layer
 
