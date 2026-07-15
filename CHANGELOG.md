@@ -12,8 +12,8 @@ byte-for-byte compatible, so Jellyfin rides the existing Emby code path unchange
 rather than duplicating it. Verified end to end against a live Jellyfin 10.11
 server, end to end: session pick, enrichment
 (People/UserData/Taglines/Chapters), poster/backdrop/logo/cast-headshot
-downloads, and the card rendering on a real Google Nest Hub. This is the first
-part of the fork proven all the way to a physical display.
+downloads, and the card rendering on a real Google Nest Hub — the same
+end-to-end bar the Emby backend has already cleared.
 
 ### Card enrichment — data layer
 

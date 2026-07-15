@@ -15,13 +15,12 @@ Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex, Emb
 > tracks his releases (currently **v1.6.0**).
 >
 > The additions here are **new and unreleased.** How far each has been proven:
-> the whole app passes `python cast/cast.py --selftest`; the **Jellyfin** path
-> has been run end to end — live Jellyfin 10.11 server through to the card
-> rendering on a real Google Nest Hub; the **Emby** parser has been run against a
-> live Emby server (same code path as Jellyfin, but not yet watched on a display).
-> **The ESP32 / ESPHome display path has never run on hardware.** If you came
-> here from upstream's README looking for Emby, Jellyfin, or ESP32, treat this as
-> a work in progress, not a drop-in replacement.
+> the whole app passes `python cast/cast.py --selftest`; both the **Emby** and
+> **Jellyfin** paths have been run end to end — a live server through to the card
+> rendering on a real Google Nest Hub. **The ESP32 / ESPHome display path has
+> never run on hardware.** If you came here from upstream's README looking for
+> Emby, Jellyfin, or ESP32, treat ESP32 as a work in progress, not a drop-in
+> replacement.
 >
 > What's added here:
 >
