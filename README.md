@@ -5,7 +5,7 @@
 [![Upstream](https://img.shields.io/badge/fork%20of-Jamisonfitz%2Fmarquee-blue?logo=github)](https://github.com/Jamisonfitz/marquee)
 [![License](https://img.shields.io/github/license/TRusselo/marquee)](LICENSE)
 
-Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex or Emby** now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the display to ambient mode when playback stops. It can also drive an **ESP32/ESPHome** display, which renders the card by polling Marquee's read-only JSON API.
+Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex, Emby, or Jellyfin** now-playing display. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the display to ambient mode when playback stops. It can also drive an **ESP32/ESPHome** display, which renders the card by polling Marquee's read-only JSON API.
 
 > ### ⚠️ This is an untested test branch
 >
@@ -15,15 +15,17 @@ Marquee turns a Google Nest Hub (or other Cast display) into a clean **Plex or E
 > tracks his releases (currently **v1.6.0**).
 >
 > The additions in this fork are **new, unreleased, and not verified in a real
-> deployment.** They pass `python cast/cast.py --selftest`, and the Emby parser
-> has been run against a live Emby server; that is the whole extent of it. **No
-> ESP32, no display panel, and no Cast device has ever run this code.** If you
-> came here from upstream's README looking for Emby or ESP32, you are looking at
-> a work in progress, not a drop-in replacement.
+> deployment.** They pass `python cast/cast.py --selftest`, and the Emby/Jellyfin
+> parser has been run against live Emby and Jellyfin servers; that is the whole
+> extent of it. **No ESP32, no display panel, and no Cast device has ever run
+> this code.** If you came here from upstream's README looking for Emby, Jellyfin,
+> or ESP32, you are looking at a work in progress, not a drop-in replacement.
 >
 > What's added here:
 >
 > - **Emby** as a media backend, alongside Plex (`MEDIA_BACKEND=emby`)
+> - **Jellyfin** as a media backend (`MEDIA_BACKEND=jellyfin`) — shares the Emby
+>   code path, since Jellyfin is an API-compatible fork of Emby
 > - **ESP32 / ESPHome** as a display target, alongside Google Cast
 > - A richer now-playing payload (cast, chapters, tagline, tracks, play method)
 > - Home Assistant notes and multi-display guides
@@ -59,7 +61,7 @@ Every template is built from the same blocks — title/logo identity, grouped ra
 
 ## Features
 
-- Live now-playing card from **Plex or Emby** (switchable with one env var),
+- Live now-playing card from **Plex, Emby, or Jellyfin** (switchable with one env var),
   with six designed templates: Spotlight, Split, Hero, Lower Third, Big Clock,
   and Street (animated marquee bulbs and all).
 - Eight themes, one-tap Vibe presets, a custom accent color, five title
@@ -81,8 +83,8 @@ Every template is built from the same blocks — title/logo identity, grouped ra
 ## What You Need
 
 - Docker
-- A media server on the same LAN: **Plex** (with an `X-Plex-Token`) **or Emby**
-  (with an API key)
+- A media server on the same LAN: **Plex** (with an `X-Plex-Token`), **Emby**,
+  **or Jellyfin** (with an API key)
 - A display on the same LAN: a **Google Cast device with a screen** (Nest Hub,
   Chromecast) **or an ESP32/ESPHome display**
 
@@ -143,9 +145,13 @@ Required environment variables:
 
 ### Choosing the media backend
 
-- `MEDIA_BACKEND` — `plex` (default) or `emby`.
+- `MEDIA_BACKEND` — `plex` (default), `emby`, or `jellyfin`.
 - For Emby, set `EMBY_HOST` (e.g. `http://localhost:8096`) and `EMBY_API_KEY`
   instead of `PLEX_HOST`/`PLEX_TOKEN`.
+- For Jellyfin, set `MEDIA_BACKEND=jellyfin` with `JELLYFIN_HOST` (e.g.
+  `http://localhost:8096`) and `JELLYFIN_API_KEY`. Jellyfin is an
+  API-compatible fork of Emby, so it shares the Emby code path — the `EMBY_*`
+  names also work if you prefer them. Verified against Jellyfin 10.11.
 
 ### Choosing the display target
 

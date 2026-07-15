@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Jellyfin joins Emby
+
+`MEDIA_BACKEND=jellyfin` is now a backend, set `JELLYFIN_HOST` and
+`JELLYFIN_API_KEY` (the `EMBY_*` names also work). Jellyfin forked from Emby in
+2018 and the endpoints Marquee touches — `api_key` query auth, `/Sessions`,
+`/Items?Ids=…&UserId=…&Fields=…`, and the image routes — are still
+byte-for-byte compatible, so Jellyfin rides the existing Emby code path unchanged
+rather than duplicating it. Verified end to end against a live Jellyfin 10.11
+server: session pick, enrichment (People/UserData/Taglines/Chapters), and
+poster/backdrop/logo/cast-headshot downloads all work.
+
 ### Card enrichment — data layer
 
 `now-playing.json` (and `/api/now-playing.json`) now carry, from **both** the

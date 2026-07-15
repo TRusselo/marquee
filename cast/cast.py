@@ -7,7 +7,8 @@ downloads poster/backdrop/logo/cast headshots, writes now-playing.json, and
 shows the card on the display; when idle it releases the display.
 
 Two seams, each chosen by env and each defaulting to the original behavior:
-  MEDIA_BACKEND=plex|emby   -> get_session()  -> current_session() / emby_current_session()
+  MEDIA_BACKEND=plex|emby|jellyfin -> get_session() -> current_session() / emby_current_session()
+                            (jellyfin shares the emby path — API-compatible fork)
   CAST_TARGET=nest|esp32    -> device_show()  -> catt cast_site / HTTP POST
 
 Frontend (one HTTP server on :8084): serves the card page and art from
@@ -23,6 +24,7 @@ filters, weatherZip) are shared; everything else is per-profile.
 Env knobs: PAGE_URL, POLL_SECONDS, REPO_DIR, SERVE_PORT, DATA_DIR.
   Plex:  PLEX_HOST, PLEX_TOKEN
   Emby:  EMBY_HOST, EMBY_API_KEY
+  Jellyfin: JELLYFIN_HOST, JELLYFIN_API_KEY (or the EMBY_ pair; shared backend)
   Nest:  HUB_IP (or type/pick a device on the settings page; catt scan is mDNS,
          which many networks drop -- the field takes a plain IP)
   ESP32: ESP32_HOST, ESP32_PORT
@@ -98,13 +100,23 @@ def env_defaults():
     return {"hubIp": HUB_IP, "plexUsers": ENV_USERS, "plexDevices": ENV_DEVICES}
 
 BACKEND = os.environ.get("MEDIA_BACKEND", "plex").lower()
-if BACKEND not in ("plex", "emby"):
+if BACKEND not in ("plex", "emby", "jellyfin"):
     BACKEND = "plex"
+
+
+def uses_emby_backend(backend):
+    """Jellyfin forked from Emby; the /Sessions, /Items and image APIs this app
+    uses are identical (verified against Jellyfin 10.11), so both share the Emby
+    session path and the same env-var seam."""
+    return backend in ("emby", "jellyfin")
+
+
+EMBY_FAMILY = uses_emby_backend(BACKEND)
 
 
 def get_session():
     """Current normalized now-playing dict from the configured backend, or None."""
-    return emby_current_session() if BACKEND == "emby" else current_session()
+    return emby_current_session() if EMBY_FAMILY else current_session()
 
 OUTPUT = os.path.join(REPO, "output")
 JSON_PATH = os.path.join(OUTPUT, "now-playing.json")
@@ -431,8 +443,11 @@ def transcode_to(path, plex_path, w, h):
         atomic_write(os.path.join(OUTPUT, path), r.read(), "wb")
 
 
-EMBY = os.environ.get("EMBY_HOST", "").rstrip("/")
-EMBY_KEY = os.environ.get("EMBY_API_KEY", "")
+# Jellyfin honors the same api_key query auth and endpoint shapes as Emby, so
+# JELLYFIN_HOST/JELLYFIN_API_KEY are accepted as aliases and fall back to the
+# EMBY_ names. Either pair works with either backend value.
+EMBY = os.environ.get("JELLYFIN_HOST", os.environ.get("EMBY_HOST", "")).rstrip("/")
+EMBY_KEY = os.environ.get("JELLYFIN_API_KEY", os.environ.get("EMBY_API_KEY", ""))
 
 
 def emby_url(path):
@@ -1272,9 +1287,10 @@ def serve_web():
 
 def loop():
     os.makedirs(DATA_DIR, exist_ok=True)
-    if BACKEND == "emby":
-        required = (("PAGE_URL", PAGE_URL), ("EMBY_HOST", EMBY),
-                    ("EMBY_API_KEY", EMBY_KEY))
+    if EMBY_FAMILY:
+        host_name = "JELLYFIN_HOST" if BACKEND == "jellyfin" else "EMBY_HOST"
+        key_name = "JELLYFIN_API_KEY" if BACKEND == "jellyfin" else "EMBY_API_KEY"
+        required = (("PAGE_URL", PAGE_URL), (host_name, EMBY), (key_name, EMBY_KEY))
     else:
         required = (("PAGE_URL", PAGE_URL), ("PLEX_HOST", PLEX),
                     ("PLEX_TOKEN", TOKEN))
@@ -1394,8 +1410,11 @@ SAMPLE_EMBY_EXTRAS = {"stinger": ["after"],
 
 
 def selftest():
-    assert BACKEND in ("plex", "emby")
+    assert BACKEND in ("plex", "emby", "jellyfin")
     assert get_session is not None  # dispatcher exists and is chosen by BACKEND
+    # Jellyfin rides the Emby session path; Plex does not.
+    assert uses_emby_backend("emby") and uses_emby_backend("jellyfin")
+    assert not uses_emby_backend("plex")
     info = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
     assert info["title"] == "The Devil Wears Prada 2"
     assert info["key"] == "79372"
