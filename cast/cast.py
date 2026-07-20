@@ -1180,6 +1180,8 @@ def clean_block_layout(value):
                 item[key] = round(max(low, min(high, number)), 2)
         if position.get("align") in ("left", "center", "right"):
             item["align"] = position["align"]
+        if position.get("font") in TITLE_FONTS:
+            item["font"] = position["font"]
         if item:
             cleaned[name] = item
     return cleaned
@@ -1449,11 +1451,11 @@ def selftest():
         and merged["template"] == "spotlight"
     layout = clean_block_layout({"identity": {"x": 12.345, "y": -200, "width": 140,
                                               "scale": 9, "height": 50,
-                                              "align": "center"},
-                                 "plot": {"align": "diagonal"},
+                                              "align": "center", "font": "bebas"},
+                                 "plot": {"align": "diagonal", "font": "comic-sans"},
                                  "unknown": {"x": 1}})
     assert layout == {"identity": {"x": 12.35, "y": -100, "width": 100,
-                                   "scale": 3, "align": "center"}}
+                                   "scale": 3, "align": "center", "font": "bebas"}}
     # Every block the card page can position must be registered here, or
     # clean_block_layout() silently discards the user's drag on save.
     for block in ("tagline", "badges", "tracks", "cast"):
