@@ -2,6 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Marquee</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🎬</text></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Oswald:wght@500;700&family=Playfair+Display:wght@700;800&family=Cinzel:wght@700;800&family=Space+Grotesk:wght@500;700&display=swap">
@@ -99,21 +100,6 @@
   .subtitle:empty { display: none; }
   .eyebrow:empty { display: none; }
 
-  .tagline { color: var(--muted); font-size: 1.7vw; font-weight: 500;
-    font-style: italic; text-wrap: balance; opacity: .92; }
-
-  /* Badges mirror .chip: border-only, no fill. There is no --chip-bg. */
-  .b-badges { display: flex; flex-direction: row; gap: .8vw; }
-  .badge { display: inline-flex; align-items: center; gap: .4vw;
-    border: 2px solid var(--chip-border); border-radius: 2vw;
-    padding: .3vh .9vw; font-size: 1.3vw; font-weight: 700;
-    color: var(--text-soft); letter-spacing: .04em; }
-  .badge.fav { color: var(--accent); border-color: var(--accent); }
-
-  .b-tracks { display: flex; flex-direction: row; gap: .8vw; flex-wrap: wrap; }
-  .b-tracks .chip { font-size: 1.25vw; }
-  .chip.transcode { color: var(--accent); border-color: var(--accent); }
-
   .meta { color: var(--muted); font-size: 1.8vw; font-weight: 500;
     display: flex; align-items: center; gap: 1.4vw; flex-wrap: wrap; }
   .chip { border: 2px solid var(--chip-border); border-radius: .5vw; padding: .2vh .7vw;
@@ -146,27 +132,9 @@
     font-size: 1.5vw; padding: .5vh .8vw; border-radius: .5vw; }
 
   .b-progress { width: 42vw; }
-  .bar { height: .9vh; background: var(--track); border-radius: 1vh; overflow: hidden;
-    position: relative; }
+  .bar { height: .9vh; background: var(--track); border-radius: 1vh; overflow: hidden; }
   .fill { height: 100%; width: 0; background: var(--accent); border-radius: 1vh;
     box-shadow: 0 0 1.2vh var(--accent-glow); transition: width 1s linear; }
-  .ticks { position: absolute; inset: 0; pointer-events: none; }
-  .ticks i { position: absolute; top: 0; bottom: 0; width: 2px;
-    margin-left: -1px; background: var(--bg); opacity: .55; }
-
-  .cast { display: flex; gap: 1.2vw; align-items: flex-start; }
-  .actor { display: grid; justify-items: center; gap: .5vh; width: 7vw; margin: 0; }
-  .actor img, .actor .mono { width: 5vw; height: 5vw; border-radius: 50%;
-    object-fit: cover; background: var(--panel);
-    border: 1px solid var(--chip-border); }
-  .actor .mono { display: grid; place-items: center; font-size: 1.6vw;
-    font-weight: 800; color: var(--text-soft); }
-  .actor figcaption { display: grid; justify-items: center; text-align: center; }
-  .actor b { color: var(--text-soft); font-size: 1.05vw; font-weight: 700;
-    line-height: 1.15; }
-  .actor span { color: var(--faint); font-size: .92vw; line-height: 1.15;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden; }
   .paused .fill { background: var(--pause); }
   .ptime { display: flex; justify-content: space-between; margin-top: 1.2vh;
     color: var(--faint); font-size: 1.5vw; font-weight: 600;
@@ -289,6 +257,91 @@
     animation-delay: calc(var(--i) * -.275s); }
   .scene .np { animation: npf 8s linear infinite; }
   .scene .pool { animation: brth 6s ease-in-out infinite; }
+
+  /* Real weather on the Street scene. Rain and snow are drawn on a <canvas>
+     (see the JS "Canvas weather" section) for real particles — adapted from
+     two CodePens, credited there and in CREDITS.md. Fog, overcast, and
+     day/night are CSS. Driven by /weather (Open-Meteo);
+     ?wx=rain|snow|fog|cloud|storm and ?day=1|0 force a condition. */
+  .wx-canvas { position: fixed; inset: 0; pointer-events: none; z-index: 3;
+    display: none; }
+  body[data-template="street"].wx-rain .wx-canvas,
+  body[data-template="street"].wx-snow .wx-canvas,
+  body[data-template="street"].wx-storm .wx-canvas { display: block; }
+
+  /* Fog: three soft layers that drift on their own speeds and pulse opacity
+     independently, under a blur so it reads as haze rather than a flat wash.
+     Technique adapted from Braeden Craig's CSS fog (which uses Daniel
+     Stuart's fog PNGs); rebuilt PNG-free with gradient tiles so the card
+     stays self-contained. */
+  @keyframes fog-move { from { background-position: 0 0; } to { background-position: -64vw 0; } }
+  @keyframes fog-op1 { 0%,100% { opacity: .12; } 22% { opacity: .5; } 40% { opacity: .3; } 58% { opacity: .42; } 80% { opacity: .18; } }
+  @keyframes fog-op2 { 0%,100% { opacity: .5; } 25% { opacity: .22; } 50% { opacity: .14; } 80% { opacity: .34; } }
+  @keyframes fog-op3 { 0%,100% { opacity: .78; } 27% { opacity: .24; } 52% { opacity: .6; } 68% { opacity: .32; } }
+  .fog { position: fixed; inset: 0; pointer-events: none; z-index: 3; display: none;
+    opacity: var(--wx-layer, .72); filter: blur(2px) saturate(1.05); }
+  body[data-template="street"].wx-fog .fog { display: block; }
+  .fog span { position: absolute; inset: 0; background-repeat: repeat-x;
+    background-image: radial-gradient(ellipse 50% 62% at 50% 55%,
+      rgba(216,224,236,.85), rgba(216,224,236,0) 72%); }
+  .fog span:nth-child(1) { background-size: 64vw 130vh;
+    animation: fog-move 34s linear infinite, fog-op1 10s ease-in-out infinite; }
+  .fog span:nth-child(2) { background-size: 52vw 150vh;
+    animation: fog-move 23s linear infinite, fog-op2 21s ease-in-out infinite; }
+  .fog span:nth-child(3) { background-size: 78vw 120vh;
+    animation: fog-move 44s linear infinite, fog-op3 17s ease-in-out infinite; }
+
+  /* Overcast: a slow, subtle cloud-shadow drift instead of flat dimming alone. */
+  @keyframes cloud-drift { 0%, 100% { transform: translateX(-4%); } 50% { transform: translateX(4%); } }
+  body[data-template="street"].wx-cloud::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 3;
+    opacity: var(--wx-layer, .72);
+    background: radial-gradient(ellipse 42vw 20vh at 18% -6%, rgba(0,0,0,.16), transparent 70%),
+      radial-gradient(ellipse 38vw 18vh at 82% 104%, rgba(0,0,0,.13), transparent 70%);
+    animation: cloud-drift 22s ease-in-out infinite; }
+
+  .scene svg { filter: brightness(var(--sb, 1)) blur(var(--sblur, 0px)); }
+  body[data-template="street"].wx-cloud { --sb: .82; }
+  body[data-template="street"].wx-storm { --sb: .74; }
+  body[data-template="street"].wx-fog { --sb: .96; --sblur: 2.6px; }
+  body[data-template="street"].street-day { --sb: 1.75; }
+  body[data-template="street"].street-day.wx-cloud { --sb: 1.35; }
+  body[data-template="street"].street-day.wx-storm { --sb: 1.2; }
+  body[data-template="street"].street-day.wx-fog { --sb: 1.6; }
+  body[data-template="street"].street-day .scene .bl,
+  body[data-template="street"].street-day .scene .ch { animation: none; opacity: .3; }
+  body[data-template="street"].street-day .scene .np text { opacity: .8; }
+  body[data-template="street"].street-day .scene .pool { display: none; }
+
+  /* Neon "NOW PLAYING" sign: layered glow + an irregular flicker, adapted
+     from Tiff Wong's neon theater sign (credited in CREDITS.md). The glow
+     rides on --accent so it retints with the theme. */
+  @keyframes neon-flicker {
+    0%, 24%, 42%, 68%, 100% { opacity: 1; }
+    4% { opacity: .9; } 6% { opacity: .85; } 8% { opacity: .95; }
+    11% { opacity: .92; } 16% { opacity: .98; } 19% { opacity: .93; }
+    28% { opacity: .96; } 39% { opacity: .96; } 46% { opacity: .94; }
+    58% { opacity: .9; } 70% { opacity: .9; } 72% { opacity: .95; }
+    95% { opacity: .95; } 97% { opacity: .93; } }
+  body[data-template="street"] .scene .np {
+    filter: drop-shadow(0 0 2px #FFE9C8) drop-shadow(0 0 7px var(--accent, #C9973B))
+      drop-shadow(0 0 14px var(--accent, #C9973B));
+    animation: neon-flicker 5.2s linear infinite; }
+  body[data-template="street"].street-day .scene .np { filter: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fog span, body[data-template="street"].wx-cloud::after,
+    body[data-template="street"] .scene .np { animation: none; }
+  }
+
+  /* LED trim: the theme accent bleeds around the poster like backlighting
+     through the marquee case, reusing --accent-glow so it retints with
+     every theme automatically, the same as the progress bar and title do. */
+  body[data-template="street"] .b-poster::after { content: ""; position: absolute;
+    inset: -1.1vw; z-index: -1; border-radius: .8vw;
+    background: radial-gradient(closest-side, var(--accent-glow), transparent 75%);
+    filter: blur(1.1vw); }
+
   body[data-template="street"] .stage { display: block; padding: 0; }
   body[data-template="street"] .block { position: absolute; }
   /* The poster hangs inside the marquee frame drawn in the scene. */
@@ -346,32 +399,24 @@
 <img class="bg" id="bg" alt="">
 <div class="bg-shade"></div>
 <div class="scene" id="scene"></div>
+<canvas class="wx-canvas" id="wxcanvas" aria-hidden="true"></canvas>
+<div class="fog" id="fog" aria-hidden="true"><span></span><span></span><span></span></div>
 <div class="stage hidden">
-  <div class="block b-clock" data-layout="clock"><div class="clock" id="clock"></div><div class="wx" id="wx"></div></div>
+  <div class="block b-clock" data-layout="clock"><div class="clock" id="clock"></div></div>
+  <div class="block b-weather" data-layout="weather"><div class="wx" id="wx"></div></div>
   <div class="block b-identity" data-layout="identity">
     <p class="eyebrow" id="eyebrow"></p>
     <img class="logo" id="logo" alt="">
     <h1 class="title" id="title"></h1>
     <p class="subtitle" id="subtitle"></p>
   </div>
-  <div class="block b-tagline" data-layout="tagline" hidden><p class="tagline" id="tagline"></p></div>
-  <div class="block b-badges" data-layout="badges" hidden>
-    <span class="badge watched" id="watched" hidden>✓ Watched</span>
-    <span class="badge fav" id="favorite" hidden>★ Favorite</span>
-  </div>
-  <div class="block b-tracks" data-layout="tracks" hidden>
-    <span class="chip" id="playmethod" hidden></span>
-    <span class="chip" id="audiotrack" hidden></span>
-    <span class="chip" id="subtrack" hidden></span>
-  </div>
   <div class="block b-meta" data-layout="meta"><div class="meta" id="meta"></div><span class="chip stinger" id="stinger" data-layout="stinger" hidden></span></div>
   <div class="block b-plot" data-layout="plot"><p class="plot" id="plot"></p></div>
   <div class="block b-ratings" data-layout="ratings"><div class="scores" id="scores"></div></div>
   <div class="block b-progress" data-layout="progress">
-    <div class="bar"><div class="fill" id="fill"></div><div class="ticks" id="ticks"></div></div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
     <div class="ptime"><span id="elapsed"></span><span id="remain"></span></div>
   </div>
-  <div class="block b-cast" data-layout="cast" hidden><div class="cast" id="cast"></div></div>
   <div class="block b-poster" data-layout="poster"><img class="poster" id="poster" alt=""></div>
 </div>
 <p class="idle">Nothing playing</p>
@@ -380,12 +425,31 @@
   const stage = document.querySelector('.stage');
   const DEMO = new URLSearchParams(location.search).has('demo');
   const EDIT = new URLSearchParams(location.search).has('edit');
-  // Which display profile this card renders. nest_show() casts ?profile=cast;
-  // an ESP panel loads ?profile=esp. The server validates the name and falls
-  // back to the default profile, so a junk value is harmless.
-  const PROFILE = new URLSearchParams(location.search).get('profile') || '';
-  const profileQS = PROFILE ? '&profile=' + encodeURIComponent(PROFILE) : '';
+  // ?tpl= previews a template without changing saved settings — handy for
+  // sharing a self-contained demo link (e.g. ?demo=1&tpl=street&wx=rain).
+  const TPL_FORCE = new URLSearchParams(location.search).get('tpl');
   const TEMPLATES = ['spotlight', 'split', 'hero', 'lowerthird', 'bigclock', 'street'];
+  // ponytail: mirrors TEMPLATE_DEFAULT_BLOCKS in cast.py — no shared codegen
+  // between the two, same as TEMPLATES/THEMES already being duplicated here.
+  const TEMPLATE_DEFAULT_BLOCKS = {
+    spotlight: ['clock', 'identity', 'meta', 'plot', 'ratings', 'progress', 'poster'],
+    split: ['clock', 'identity', 'meta', 'plot', 'ratings', 'progress', 'poster'],
+    hero: ['clock', 'identity', 'meta', 'ratings', 'progress'],
+    lowerthird: ['clock', 'identity', 'meta', 'ratings', 'progress'],
+    bigclock: ['clock', 'identity', 'meta', 'plot', 'progress'],
+    street: ['clock', 'identity', 'meta', 'plot', 'ratings', 'progress', 'poster'],
+  };
+  // A block outside its template's default set has no grid-area or template
+  // CSS anchor to offset from, so it needs a real starting position the
+  // first time it's shown. Filled in properly by the settings page's Add
+  // flow (nearest open grid cell); this is only the safety-net fallback.
+  const ADDED_BLOCK_FALLBACK = { x: 10, y: 10, width: 30 };
+  function visibleBlockSet(tpl, visibility) {
+    const shown = new Set(TEMPLATE_DEFAULT_BLOCKS[tpl] || []);
+    const overrides = (visibility || {})[tpl] || {};
+    for (const name in overrides) overrides[name] ? shown.add(name) : shown.delete(name);
+    return shown;
+  }
   let shownKey = null, prog = null, state = 'playing', fetchedAt = 0;
   let baseCfg = null, draftCfg = null, draftLayout = null, lastD = null;
   let selectedLayout = 'identity', announced = false;
@@ -403,10 +467,6 @@
   const FONTS = { bebas: "'Bebas Neue', sans-serif", oswald: "'Oswald', sans-serif",
     playfair: "'Playfair Display', serif", cinzel: "'Cinzel', serif",
     grotesk: "'Space Grotesk', sans-serif" };
-
-  // Contract values are lowercase identifiers; these are the display labels.
-  const PLAY_METHOD = { directplay: 'Direct Play',
-    directstream: 'Direct Stream', transcode: 'Transcode' };
 
   // The demo reel: original fictional films made for Marquee, so the demo
   // never shows copyrighted posters or mismatched metadata. All art is
@@ -537,18 +597,7 @@
         runtime: '1h 44m', media: '4K · HEVC · ATMOS',
         scores: { rtCritic: 89, rtCriticFresh: true, rtAudience: 45, rtAudienceFresh: false, imdb: 7.1 },
         progress: { offsetMs: 3865000, durationMs: 6240000 }, state: 'playing',
-        stinger: ['after'], poster: true, backdrop: true, logo: true,
-        tagline: "He'll promise you anything.",
-        watched: true, favorite: true, playMethod: 'directplay',
-        audioTrack: 'English TrueHD Atmos 7.1 (Default)',
-        subtitleTrack: 'English (SUBRIP)',
-        chapters: [0, 540000, 1320000, 2460000, 3600000, 4980000, 5760000],
-        cast: [
-          { name: 'Marla Quint', role: 'Mayor Dolores Vance', thumb: false },
-          { name: 'Errol Sandoval', role: 'Campaign Manager', thumb: false },
-          { name: 'Bess Okonkwo', role: 'The Opponent', thumb: false },
-          { name: 'Roy Tibbet', role: 'Baby Wrangler', thumb: false },
-        ] } },
+        stinger: ['after'], poster: true, backdrop: true, logo: true } },
     { poster: P_RATKING, backdrop: B_RATKING, logo: L_RATKING,
       data: { playing: true, type: 'movie', key: 'demo-ratking',
         title: 'Rat King III: Still Gnawing', year: '2026',
@@ -557,10 +606,7 @@
         runtime: '1h 51m', media: '1080P · H264 · DTS',
         scores: { rtCritic: 38, rtCriticFresh: false, rtAudience: 97, rtAudienceFresh: true, imdb: 6.9 },
         progress: { offsetMs: 1480000, durationMs: 6660000 }, state: 'playing',
-        stinger: ['during'], poster: true, backdrop: true, logo: true,
-        watched: false, favorite: false, playMethod: 'transcode',
-        audioTrack: 'Commentary DTS 5.1',
-        chapters: [], cast: [] } },
+        stinger: ['during'], poster: true, backdrop: true, logo: true } },
     { poster: P_TROPHY, backdrop: B_TROPHY, logo: L_TROPHY,
       data: { playing: true, type: 'movie', key: 'demo-trophy',
         title: 'Participation Trophy', year: '2026',
@@ -569,16 +615,7 @@
         runtime: '1h 37m', media: '4K · AV1 · AAC',
         scores: { rtCritic: 41, rtCriticFresh: false, rtAudience: 96, rtAudienceFresh: true, imdb: 7.4 },
         progress: { offsetMs: 4560000, durationMs: 5820000 }, state: 'playing',
-        poster: true, backdrop: true, logo: true,
-        tagline: 'Everybody wins. Nobody is liable.',
-        watched: true, favorite: false, playMethod: 'directstream',
-        audioTrack: 'English AAC 2.0', subtitleTrack: 'English SDH',
-        chapters: [0, 720000, 1980000, 3240000, 4500000],
-        cast: [
-          { name: 'Dov Marchetti', role: 'Coach Buddy Reems', thumb: false },
-          { name: 'Simone Ashgrove', role: 'League Attorney', thumb: false },
-          { name: 'Pip Vasquez', role: 'Left Wing, Age 9', thumb: false },
-        ] } },
+        poster: true, backdrop: true, logo: true } },
     { poster: P_BSIDES, backdrop: B_BSIDES, logo: L_BSIDES,
       data: { playing: true, type: 'movie', key: 'demo-bsides',
         title: 'B-Sides', year: '2026',
@@ -587,16 +624,7 @@
         runtime: '2h 13m', media: '1080P · H264 · FLAC',
         scores: { rtCritic: 98, rtCriticFresh: true, rtAudience: 71, rtAudienceFresh: true, imdb: 8.1 },
         progress: { offsetMs: 5310000, durationMs: 7980000 }, state: 'playing',
-        stinger: ['after'], poster: true, backdrop: true, logo: true,
-        tagline: 'A romance recorded at 33⅓.',
-        watched: false, favorite: true, playMethod: 'directplay',
-        audioTrack: 'English FLAC 2.0 (Default)',
-        subtitleTrack: 'English (PGSSUB)',
-        chapters: [0, 900000, 2100000, 3600000, 5100000, 6600000, 7500000],
-        cast: [
-          { name: 'Junie Halloran', role: 'Clerk, Side A', thumb: false },
-          { name: 'Theo Bramwell', role: 'Clerk, Side B', thumb: false },
-        ] } },
+        stinger: ['after'], poster: true, backdrop: true, logo: true } },
   ];
   // ?demo picks at random; ?demo=2 pins a film (handy for screenshots).
   const demoPick = parseInt(new URLSearchParams(location.search).get('demo'), 10);
@@ -715,49 +743,6 @@ ${bulbs.join('')}
     if (b) b.hidden = !on;
   }
 
-  // Chapter marks inside the progress bar. chapters[0] is 0 on nearly every
-  // real file, and a mark under the bar's left cap reads as a rendering bug,
-  // so only strictly-interior offsets get a tick. One chapter means no ticks.
-  function renderTicks(d, c) {
-    const dur = d.progress && d.progress.durationMs;
-    const marks = (c.showChapters !== false && dur && Array.isArray(d.chapters))
-      ? d.chapters.filter(ms => ms > 0 && ms < dur) : [];
-    $('ticks').innerHTML = marks.length < 2 ? '' : marks
-      .map(ms => `<i style="left:${(ms / dur * 100).toFixed(3)}%"></i>`).join('');
-  }
-
-  const initials = n => (n || '').trim().split(/\s+/).slice(0, 2)
-    .map(w => w[0] || '').join('').toUpperCase();
-
-  // cast[i].thumb is a boolean; the headshot lives at /cast/{i}.jpg, keyed by
-  // the array index. The onerror fallback is wired in JS rather than as an
-  // inline attribute: a name like  "Bob"  escapes to &quot;, which the HTML
-  // parser turns back into a quote that would break an attribute's JS string.
-  function renderCast(d, c) {
-    const list = (c.showCast !== false && Array.isArray(d.cast)) ? d.cast : [];
-    $('cast').innerHTML = list.map((p, i) => {
-      const face = (p.thumb && !DEMO)
-        ? `<img src="/cast/${i}.jpg?k=${encodeURIComponent(d.key || '')}" alt="">`
-        : `<span class="mono">${esc(initials(p.name))}</span>`;
-      return `<figure class="actor">${face}<figcaption>` +
-        `<b>${esc(p.name)}</b><span>${esc(p.role || '')}</span>` +
-        `</figcaption></figure>`;
-    }).join('');
-    // Walk figures, not images: with a mix of headshots and initials the img
-    // NodeList indices no longer line up with cast[].
-    [...$('cast').children].forEach((fig, i) => {
-      const img = fig.querySelector('img');
-      if (!img) return;
-      img.onerror = () => {
-        const mono = document.createElement('span');
-        mono.className = 'mono';
-        mono.textContent = initials(list[i].name);
-        img.replaceWith(mono);
-      };
-    });
-    show('cast', list.length > 0);
-  }
-
   function render(d) {
     lastD = d;
     const c = activeCfg();
@@ -778,42 +763,19 @@ ${bulbs.join('')}
     if (FONTS[c.bodyFont]) root.setProperty('--font', FONTS[c.bodyFont]);
     else root.removeProperty('--font');
 
-    const tpl = TEMPLATES.includes(c.template) ? c.template : 'spotlight';
+    const tpl = TEMPLATES.includes(TPL_FORCE) ? TPL_FORCE
+      : (TEMPLATES.includes(c.template) ? c.template : 'spotlight');
     document.body.dataset.template = tpl;
     if (tpl === 'street' && !$('scene').firstChild) $('scene').innerHTML = SCENE;
+    // Landing on Street before the 10-minute weather poll has ever run
+    // would otherwise leave the scene undimmed/dry until the next tick.
+    if (tpl === 'street' && !lastWx) wxTick();
     document.body.classList.toggle('flip',
       (tpl === 'spotlight' || tpl === 'split') && c.posterSide === 'left');
 
     $('eyebrow').textContent = c.showGenres !== false ? (d.genres || []).join('  ·  ') : '';
     $('title').textContent = d.title || '';
     $('subtitle').textContent = d.subtitle || '';
-
-    const taglineOn = c.showTagline !== false && !!d.tagline;
-    $('tagline').textContent = taglineOn ? d.tagline : '';
-    show('tagline', taglineOn);
-
-    // favorite is Emby-only: on Plex the key is absent, so compare to true
-    // rather than testing truthiness, and never draw an empty badge row.
-    const badgesOn = c.showBadges !== false;
-    const wOn = badgesOn && d.watched === true;
-    const fOn = badgesOn && d.favorite === true;
-    $('watched').hidden = !wOn;
-    $('favorite').hidden = !fOn;
-    show('badges', wOn || fOn);
-
-    const pmOn = c.showPlayMethod !== false && !!d.playMethod;
-    $('playmethod').textContent = pmOn
-      ? (PLAY_METHOD[d.playMethod] || d.playMethod) : '';
-    $('playmethod').classList.toggle('transcode', d.playMethod === 'transcode');
-    $('playmethod').hidden = !pmOn;
-
-    const trOn = c.showTracks !== false;
-    const aOn = trOn && !!d.audioTrack, sOn = trOn && !!d.subtitleTrack;
-    $('audiotrack').textContent = aOn ? '🔊 ' + d.audioTrack : '';
-    $('audiotrack').hidden = !aOn;
-    $('subtrack').textContent = sOn ? 'CC ' + d.subtitleTrack : '';
-    $('subtrack').hidden = !sOn;
-    show('tracks', pmOn || aOn || sOn);
 
     const useLogo = c.logo !== false && d.logo;
     stage.classList.toggle('has-logo', useLogo);
@@ -846,16 +808,16 @@ ${bulbs.join('')}
       `<div class="score"><span class="imdb-tag">IMDb</span><div class="num">${esc(s.imdb)}</div></div>`);
     $('scores').innerHTML = parts.join('');
 
-    renderCast(d, c);
-    renderTicks(d, c);
-
-    show('clock', c.showClock !== false);
-    show('identity', true);
-    show('meta', metaHtml !== '');
-    show('plot', c.showPlot !== false && !!d.summary);
-    show('ratings', parts.length > 0);
-    show('progress', !!d.progress && c.showProgress !== false);
-    show('poster', !!d.poster);
+    const shown = visibleBlockSet(tpl, c.blockVisibility);
+    show('clock', shown.has('clock') && c.showClock !== false);
+    show('weather', shown.has('weather') && c.showWeather !== false);
+    show('identity', shown.has('identity'));
+    show('meta', shown.has('meta') && metaHtml !== '');
+    show('plot', shown.has('plot') && c.showPlot !== false && !!d.summary);
+    show('ratings', shown.has('ratings') && parts.length > 0);
+    show('progress', shown.has('progress') && !!d.progress && c.showProgress !== false);
+    show('poster', shown.has('poster') && !!d.poster);
+    paintWx();
     applyBlockLayout();
     if (EDIT && !announced) {
       // First render: blocks finally have real sizes, so the settings sliders
@@ -867,12 +829,33 @@ ${bulbs.join('')}
   }
 
   function applyBlockLayout() {
-    const layout = activeCfg().blockLayout || {};
+    const tpl = document.body.dataset.template;
+    const native = new Set(TEMPLATE_DEFAULT_BLOCKS[tpl] || []);
+    const layout = (activeCfg().blockLayout || {})[tpl] || {};
     document.querySelectorAll('[data-layout]').forEach(el => {
-      const p = layout[el.dataset.layout] || {};
-      el.style.transform =
-        `translate(${p.x || 0}vw, ${p.y || 0}vh) scale(${p.scale || 1})`;
-      el.style.width = p.width ? p.width + 'vw' : '';
+      const name = el.dataset.layout;
+      const p = layout[name] || {};
+      // Stinger already has a natural anchor (it's an inline child of the
+      // meta block, not a template-native top-level block) — it's always
+      // been a transform-offset from wherever it naturally sits.
+      if (native.has(name) || name === 'stinger') {
+        // Already has a template-defined base position (a grid-area, or a
+        // Street per-block CSS anchor) — x/y is a nudge on top of it, as
+        // it's always been.
+        el.style.position = ''; el.style.left = ''; el.style.top = '';
+        el.style.transform =
+          `translate(${p.x || 0}vw, ${p.y || 0}vh) scale(${p.scale || 1})`;
+      } else {
+        // Added beyond the template's native set: nothing anchors it, so
+        // its saved x/y IS the position, not an offset from one.
+        const f = ADDED_BLOCK_FALLBACK;
+        el.style.position = 'absolute';
+        el.style.left = (p.x != null ? p.x : f.x) + 'vw';
+        el.style.top = (p.y != null ? p.y : f.y) + 'vh';
+        el.style.transform = `scale(${p.scale || 1})`;
+      }
+      const width = p.width || (native.has(name) ? null : ADDED_BLOCK_FALLBACK.width);
+      el.style.width = width ? width + 'vw' : '';
       el.classList.remove('al-left', 'al-center', 'al-right');
       if (p.align) el.classList.add('al-' + p.align);
       // Per-block font: children inherit; --title-font covers the .title.
@@ -884,7 +867,8 @@ ${bulbs.join('')}
   }
 
   function selectionValues(el, name) {
-    const p = (draftLayout || activeCfg().blockLayout || {})[name] || {};
+    const tpl = document.body.dataset.template;
+    const p = ((draftLayout || activeCfg().blockLayout || {})[tpl] || {})[name] || {};
     const rect = el.getBoundingClientRect();
     return { x: p.x || 0, y: p.y || 0,
       width: p.width || Math.round(rect.width / innerWidth * 100),
@@ -905,10 +889,12 @@ ${bulbs.join('')}
         document.querySelectorAll('[data-layout]').forEach(n => n.classList.remove('selected'));
         el.classList.add('selected');
         const name = el.dataset.layout;
+        const tpl = document.body.dataset.template;
         const layout = draftLayout ||= structuredClone(activeCfg().blockLayout || {});
+        const tplLayout = layout[tpl] ||= {};
         selectedLayout = name;
         announceSelection(el, name, true);
-        const p = layout[name] ||= {};
+        const p = tplLayout[name] ||= {};
         const start = { x: event.clientX, y: event.clientY, px: p.x || 0, py: p.y || 0 };
         el.setPointerCapture(event.pointerId);
         const snap = v => Math.round(v);
@@ -940,23 +926,168 @@ ${bulbs.join('')}
 
   // Weather beside the clock (any template): /weather is served by the
   // container from Open-Meteo, keyed to the ZIP in settings.
+  //
+  // Two independent switches feed off the same fetch: the "Weather" text
+  // chip (showWeather) and "Weather effects" (weatherFX) — the live
+  // rain/snow/fog/day-night on the Street scene. Either one on (or a ?wx=
+  // / ?day= test override) triggers the fetch; neither is coupled to the
+  // other, so you can have the chip without effects or vice-versa.
   let lastWx = null;
+  const WX_FORCE = new URLSearchParams(location.search).get('wx');
+  const DAY_FORCE = new URLSearchParams(location.search).get('day');
   const wxWord = c =>
     c == null ? '' :
     c >= 95 ? 'storms' :
     c >= 85 ? 'snow' : (c >= 80 ? 'showers' : '') ||
     (c >= 71 ? 'snow' : c >= 51 ? 'rain' : c >= 45 ? 'fog' : c >= 2 ? 'clouds' : 'clear');
+  const wxClass = code =>
+    code == null ? '' :
+    code >= 95 ? 'wx-storm' :
+    code >= 71 && code <= 86 && !(code >= 80 && code <= 82) ? 'wx-snow' :
+    (code >= 51 && code <= 67) || (code >= 80 && code <= 82) ? 'wx-rain' :
+    code >= 45 && code <= 48 ? 'wx-fog' :
+    code >= 2 ? 'wx-cloud' : '';
+
+  const REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ── Canvas weather: real rain and snow particles ──────────────────────
+  // Rain adapts sheepjs's canvas rain (streak length ∝ fall speed, splash
+  // on impact), recoloured toward white per Jamison's note. Snow adapts
+  // ivanodintsov's canvas snow (circles with random radius, speed, wind
+  // drift). Both credited in CREDITS.md. One canvas, one rAF loop, only
+  // running while rain/snow/storm is on — cleared and stopped otherwise.
+  const wxCanvas = $('wxcanvas'), wxCtx = wxCanvas.getContext('2d');
+  let wxMode = null, wxRAF = null, wxW = 0, wxH = 0, drops = [], splashes = [];
+  // Intensity 1..4 (Settings → Effect intensity). Scales particle count,
+  // particle opacity, and the CSS opacity of the fog/cloud layers. Level 2
+  // is the default — present but easy to ignore in peripheral vision.
+  const WX_LEVELS = {
+    1: { rain: 90,  storm: 150, snow: 65,  alpha: .34, layer: .5 },
+    2: { rain: 160, storm: 240, snow: 110, alpha: .5,  layer: .72 },
+    3: { rain: 250, storm: 360, snow: 165, alpha: .64, layer: .9 },
+    4: { rain: 360, storm: 480, snow: 230, alpha: .82, layer: 1 },
+  };
+  const WXI_FORCE = new URLSearchParams(location.search).get('wxi');
+  let wxAlpha = WX_LEVELS[2].alpha, wxLevelUsed = 0;
+  function wxLevelNum() {
+    const n = parseInt(WXI_FORCE != null ? WXI_FORCE : activeCfg().weatherIntensity, 10);
+    return Math.min(4, Math.max(1, Number.isFinite(n) ? n : 2));
+  }
+  function wxSize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    wxW = window.innerWidth; wxH = window.innerHeight;
+    wxCanvas.width = wxW * dpr; wxCanvas.height = wxH * dpr;
+    wxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  function seedRain(n) {
+    drops = []; splashes = [];
+    for (let i = 0; i < n; i++) drops.push({
+      x: rnd(0, wxW), y: rnd(-wxH, 0),
+      vy: rnd(6, 15), vx: rnd(-0.4, 0.9), len: 0 });
+    drops.forEach(d => d.len = d.vy * 1.6);
+  }
+  function seedSnow(n) {
+    drops = []; splashes = [];
+    for (let i = 0; i < n; i++) drops.push({
+      x: rnd(0, wxW), y: rnd(-wxH, 0), r: rnd(0.6, 3.3),
+      vy: rnd(0.5, 2.4), wind: rnd(-0.4, 1.3), ph: rnd(0, 6.3) });
+  }
+  function wxFrame() {
+    wxCtx.clearRect(0, 0, wxW, wxH);
+    if (wxMode === 'snow') {
+      wxCtx.fillStyle = '#fff';
+      for (const f of drops) {
+        wxCtx.globalAlpha = Math.min(1, (0.4 + (f.r / 3.3) * 0.5) * (wxAlpha * 2));
+        wxCtx.beginPath(); wxCtx.arc(f.x, f.y, f.r, 0, 6.2832); wxCtx.fill();
+        f.y += f.vy; f.x += f.wind + Math.sin((f.ph += 0.01)) * 0.4;
+        if (f.y > wxH + 4) { f.y = -4; f.x = rnd(0, wxW); }
+        if (f.x > wxW + 4) f.x = -4; else if (f.x < -4) f.x = wxW + 4;
+      }
+      wxCtx.globalAlpha = 1;
+    } else {
+      // rain / storm: near-white streaks, faster+longer for storm
+      wxCtx.strokeStyle = `rgba(214,224,240,${wxAlpha})`; wxCtx.lineCap = 'round';
+      for (const d of drops) {
+        wxCtx.lineWidth = Math.max(0.7, d.vy / 11);
+        wxCtx.beginPath(); wxCtx.moveTo(d.x, d.y);
+        wxCtx.lineTo(d.x + d.vx * 2, d.y + d.len); wxCtx.stroke();
+        d.x += d.vx * 2; d.y += d.vy;
+        if (d.y > wxH - 3) {
+          for (let s = 0; s < 3; s++) splashes.push({
+            x: d.x, y: wxH - 2, vx: rnd(-1.2, 1.2), vy: rnd(-2.4, -0.5),
+            r: rnd(0.6, 1.6), a: 1 });
+          d.y = rnd(-40, -4); d.x = rnd(0, wxW);
+          d.vy = rnd(6, 15); d.len = d.vy * 1.6;
+        }
+      }
+      wxCtx.fillStyle = `rgba(214,224,240,${wxAlpha})`;
+      for (let i = splashes.length - 1; i >= 0; i--) {
+        const s = splashes[i];
+        wxCtx.globalAlpha = Math.max(0, s.a);
+        wxCtx.beginPath(); wxCtx.arc(s.x, s.y, Math.max(0, s.r), 0, 6.2832); wxCtx.fill();
+        s.x += s.vx; s.y += s.vy; s.vy += 0.12; s.r -= 0.06; s.a -= 0.03;
+        if (s.a <= 0 || s.r <= 0) splashes.splice(i, 1);
+      }
+      wxCtx.globalAlpha = 1;
+    }
+    wxRAF = requestAnimationFrame(wxFrame);
+  }
+  function wxSeed() {
+    const L = WX_LEVELS[wxLevelUsed]; wxAlpha = L.alpha;
+    if (wxMode === 'snow') seedSnow(L.snow);
+    else seedRain(wxMode === 'storm' ? L.storm : L.rain);
+  }
+  function wxStart(mode) {
+    const lv = wxLevelNum();
+    if (wxMode === mode && wxLevelUsed === lv) return;
+    wxMode = mode; wxLevelUsed = lv; wxSize(); wxSeed();
+    if (wxRAF) cancelAnimationFrame(wxRAF);
+    if (REDUCE) { wxFrame(); cancelAnimationFrame(wxRAF); wxRAF = null; }  // one static frame
+    else wxRAF = requestAnimationFrame(wxFrame);
+  }
+  function wxStop() {
+    if (!wxMode) return;
+    wxMode = null; wxLevelUsed = 0;
+    if (wxRAF) { cancelAnimationFrame(wxRAF); wxRAF = null; }
+    wxCtx.clearRect(0, 0, wxW, wxH);
+  }
+  window.addEventListener('resize', () => { if (wxMode) { wxSize(); wxSeed(); } });
+
+  function applyStreetWeather() {
+    const c = activeCfg();
+    document.body.classList.remove('wx-rain', 'wx-snow', 'wx-fog', 'wx-cloud', 'wx-storm');
+    // Effects are their own opt-in, independent of the weather chip. ?wx=
+    // / ?day= always force so the conditions stay testable from a URL.
+    const fx = document.body.dataset.template === 'street'
+      && (c.weatherFX !== false || WX_FORCE || DAY_FORCE !== null);
+    if (!fx) { document.body.classList.remove('street-day'); wxStop(); return; }
+    document.body.style.setProperty('--wx-layer', WX_LEVELS[wxLevelNum()].layer);
+    const cls = WX_FORCE ? 'wx-' + WX_FORCE : wxClass(lastWx?.code);
+    if (['wx-rain', 'wx-snow', 'wx-fog', 'wx-cloud', 'wx-storm'].includes(cls))
+      document.body.classList.add(cls);
+    const h = new Date().getHours();
+    document.body.classList.toggle('street-day', DAY_FORCE !== null
+      ? DAY_FORCE === '1'
+      : (lastWx?.isDay != null ? lastWx.isDay : h >= 7 && h < 19));
+    if (document.body.classList.contains('wx-snow')) wxStart('snow');
+    else if (document.body.classList.contains('wx-storm')) wxStart('storm');
+    else if (document.body.classList.contains('wx-rain')) wxStart('rain');
+    else wxStop();
+  }
   function paintWx() {
     const c = activeCfg();
-    if (!c.showWeather || !lastWx || lastWx.temp == null) {
-      $('wx').textContent = ''; return;
-    }
-    const f = (c.weatherUnits || 'f') === 'f';
-    const t = Math.round(f ? lastWx.temp * 9 / 5 + 32 : lastWx.temp);
-    $('wx').textContent = `${t}°${f ? 'F' : 'C'} · ${wxWord(lastWx.code)}`;
+    $('wx').textContent = (c.showWeather && lastWx && lastWx.temp != null)
+      ? `${Math.round((c.weatherUnits || 'f') === 'f' ? lastWx.temp * 9 / 5 + 32 : lastWx.temp)}°${(c.weatherUnits || 'f') === 'f' ? 'F' : 'C'} · ${wxWord(lastWx.code)}`
+      : '';
+    applyStreetWeather();
   }
   async function wxTick() {
-    if (!activeCfg().showWeather) { paintWx(); return; }
+    const c = activeCfg();
+    const wanted = c.showWeather
+      || (c.weatherFX !== false && document.body.dataset.template === 'street')
+      || WX_FORCE || DAY_FORCE !== null;
+    if (!wanted) { paintWx(); return; }
     try { lastWx = await (await fetch('/weather')).json(); } catch (e) {}
     paintWx();
   }
@@ -990,11 +1121,13 @@ ${bulbs.join('')}
     } else if (msg.type === 'marquee-set') {
       const el = document.querySelector(`[data-layout="${selectedLayout}"]`);
       if (!el || !['x', 'y', 'width', 'scale', 'align', 'font'].includes(msg.field)) return;
+      const tpl = document.body.dataset.template;
       const layout = draftLayout ||= structuredClone(activeCfg().blockLayout || {});
+      const tplLayout = layout[tpl] ||= {};
       // Seed numbers only: writing align/font here would silently pin the
       // template's alignment (the old off-center-title bug).
       const { align, font, ...seed } = selectionValues(el, selectedLayout);
-      const p = layout[selectedLayout] ||= seed;
+      const p = tplLayout[selectedLayout] ||= seed;
       p[msg.field] = ['align', 'font'].includes(msg.field)
         ? String(msg.value) : Number(msg.value);
       applyBlockLayout();
@@ -1005,8 +1138,10 @@ ${bulbs.join('')}
       // editor grid line (the overlay draws every 2.5vw x 2.5vh).
       const el = document.querySelector(`[data-layout="${selectedLayout}"]`);
       if (!el) return;
+      const tpl = document.body.dataset.template;
       const layout = draftLayout ||= structuredClone(activeCfg().blockLayout || {});
-      const p = layout[selectedLayout] ||= {};
+      const tplLayout = layout[tpl] ||= {};
+      const p = tplLayout[selectedLayout] ||= {};
       const r = el.getBoundingClientRect(), G = 2.5;
       const left = r.left / innerWidth * 100, top = r.top / innerHeight * 100;
       const clamp = v => Math.max(-100, Math.min(100, Math.round(v * 100) / 100));
@@ -1046,8 +1181,7 @@ ${bulbs.join('')}
   let lastCfgText = '';
   async function settingsTick() {
     try {
-      const text = await (await fetch(
-        '/settings.json?t=' + Date.now() + profileQS)).text();
+      const text = await (await fetch('/settings.json?t=' + Date.now())).text();
       if (text !== lastCfgText) {
         lastCfgText = text;
         baseCfg = JSON.parse(text);

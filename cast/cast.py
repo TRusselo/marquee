@@ -1,42 +1,33 @@
 #!/usr/bin/env python3
-"""Marquee — a "now playing" marquee for Google Cast displays and ESP32 panels.
+"""Marquee — a "now playing" marquee for Google Nest Hubs.
 The whole app in one container: front end + back end.
 
 Backend: polls the media server every POLL_SECONDS; while something plays it
-downloads poster/backdrop/logo/cast headshots, writes now-playing.json, and
-shows the card on the display; when idle it releases the display.
+downloads poster/backdrop/logo, writes now-playing.json, and casts the card to
+the Hub; when idle it releases the Hub.
 
-Two seams, each chosen by env and each defaulting to the original behavior:
-  MEDIA_BACKEND=plex|emby|jellyfin -> get_session() -> current_session() / emby_current_session()
-                            (jellyfin shares the emby path — API-compatible fork)
-  CAST_TARGET=nest|esp32    -> device_show()  -> catt cast_site / HTTP POST
+The media server is chosen on the settings page or by env (settings win,
+env is the container default, plex when neither says otherwise):
+  MEDIA_BACKEND=plex|emby|jellyfin -> get_session() -> current_session() /
+  emby_current_session() (jellyfin shares the emby path — API-compatible fork)
+Each backend's host and API key/token can also be entered on the settings
+page (one host + key field pair, pointed at the backend the dropdown picks);
+secrets are stored server-side and never served back to a browser.
 
 Frontend (one HTTP server on :8084): serves the card page and art from
-output/, the settings UI at /settings, /save, /release-notes, and a read-only
-CORS API at /api/now-playing.json, /api/settings and /api/healthz.
-
-Settings live in two profiles (cast, esp); each display fetches its own with
-?profile=<name> on /settings.json or /api/settings, and POSTs it back to
-/save?profile=<name>. Omitting the name means the default profile, so a client
-that knows nothing about profiles still works. Globals (hubIp, the session
-filters, weatherZip) are shared; everything else is per-profile.
+output/, the settings UI at /settings, /save, and /release-notes.
 
 Env knobs: PAGE_URL, POLL_SECONDS, REPO_DIR, SERVE_PORT, DATA_DIR.
-  Plex:  PLEX_HOST, PLEX_TOKEN
-  Emby:  EMBY_HOST, EMBY_API_KEY
+  Plex:     PLEX_HOST, PLEX_TOKEN
+  Emby:     EMBY_HOST, EMBY_API_KEY
   Jellyfin: JELLYFIN_HOST, JELLYFIN_API_KEY (or the EMBY_ pair; shared backend)
-  Nest:  HUB_IP (or type/pick a device on the settings page; catt scan is mDNS,
-         which many networks drop -- the field takes a plain IP)
-  ESP32: ESP32_HOST, ESP32_PORT
-Optional TMDB_API_KEY enables the credits-scene badge. Optional MEDIA_USERS /
-MEDIA_DEVICES (PLEX_USERS / PLEX_DEVICES honored as fallbacks) limit which
-users and player devices trigger the marquee; both backends honor both filters.
-
-HUB_IP, MEDIA_USERS and MEDIA_DEVICES are container-level *defaults*: a value
-typed into the corresponding settings-page field replaces them, and an empty
-field inherits them. /env-defaults serves those three -- and only those three,
-by allowlist -- so the page can show them as placeholders. A filter nobody can
-see is a filter that lies.
+Optional TMDB_API_KEY enables the credits-scene badge; optional PLEX_USERS /
+PLEX_DEVICES limit which users and player devices trigger the marquee (also
+editable live on the settings page); both backends honor both filters.
+Optional BLOCK_TAGS lists do-not-cast words: a session whose genres or tags
+contain one is never cast, so the marquee cannot overshare. The
+cast device comes from the settings page (auto-discovered via catt scan) or
+the HUB_IP env fallback.
 """
 import json
 import mimetypes
@@ -52,7 +43,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.7.0"
+VERSION = "1.11.2"
 HUB_IP = os.environ.get("HUB_IP", "")
 PAGE_URL = os.environ.get("PAGE_URL", "")
 PLEX = os.environ.get("PLEX_HOST", "").rstrip("/")
@@ -65,14 +56,13 @@ def csv_set(value):
     return {v.strip().lower() for v in (value or "").split(",") if v.strip()}
 
 
-# Comma-separated usernames / device names that may trigger the marquee; empty
-# = everyone / any device. MEDIA_* preferred, PLEX_* honored as fallback. The
-# env var is the container-level default: whatever is typed on the settings page
-# replaces it, exactly as HUB_IP behaves. The raw strings are kept so the
-# settings page can show them as placeholders -- an env filter nobody can see is
-# an env filter that lies.
-ENV_USERS = os.environ.get("MEDIA_USERS", os.environ.get("PLEX_USERS", ""))
-ENV_DEVICES = os.environ.get("MEDIA_DEVICES", os.environ.get("PLEX_DEVICES", ""))
+# Comma-separated Plex usernames/device names that may trigger the marquee;
+# empty = everyone / any device. The env var is the container-level default:
+# whatever is typed on the settings page replaces it, exactly as HUB_IP
+# behaves. The raw strings are kept so the settings page can show them as
+# placeholders — an env filter nobody can see is an env filter that lies.
+ENV_USERS = os.environ.get("PLEX_USERS", "")
+ENV_DEVICES = os.environ.get("PLEX_DEVICES", "")
 USERS = csv_set(ENV_USERS)
 DEVICES = csv_set(ENV_DEVICES)
 
@@ -83,25 +73,64 @@ def filter_set(saved, env_default):
 
     Overrides rather than merges. A union would let an env var filter sessions
     that the settings page shows no sign of, and could never be lifted from the
-    UI -- clearing the field would change nothing.
+    UI — clearing the field would change nothing.
     """
     chosen = csv_set(saved)
     return chosen if chosen else csv_set(env_default)
 
 
+# Comma-separated do-not-cast words: a session whose genres or tags contain
+# one of these is never cast, so the marquee cannot overshare. Same
+# default-vs-override rule as the other filters.
+ENV_BLOCK_TAGS = os.environ.get("BLOCK_TAGS", "")
+
+
+def content_blocked(words, terms):
+    """True when any do-not-cast word matches any of the item's genre / tag /
+    content-rating terms, case-insensitive. A word of 3+ characters matches
+    *inside* a term ("adult" blocks "Adult Animation") — for an overshare
+    guard, blocking too much beats leaking. Shorter words must equal the
+    whole term, so blocking the "R" rating does not block "Horror". Empty
+    words block nothing."""
+    lowered = [t.lower() for t in terms if t]
+    return any(w == t or (len(w) >= 3 and w in t)
+               for w in words for t in lowered)
+
+
+def plex_item_terms(video):
+    """Genre, Label, and content-rating terms on a Plex session Video."""
+    return ([g.get("tag") or "" for g in video.findall("Genre")]
+            + [l.get("tag") or "" for l in video.findall("Label")]
+            + [video.get("contentRating") or ""])
+
+
+def emby_item_terms(item):
+    """Genre, tag, and content-rating terms on an Emby/Jellyfin
+    NowPlayingItem. OfficialRating is in the enrich field list, so the
+    post-enrich re-check sees it even when /Sessions omits it."""
+    return ((item.get("Genres") or [])
+            + [t.get("Name") or "" for t in (item.get("TagItems") or [])]
+            + (item.get("Tags") or [])
+            + [item.get("OfficialRating") or ""])
+
+
 # Only these env vars are ever shown to the settings page. An allowlist, not a
 # denylist: a future PLEX_TOKEN-shaped variable must not leak by default.
-ENV_HINT_KEYS = ("hubIp", "plexUsers", "plexDevices")
+ENV_HINT_KEYS = ("hubIp", "plexUsers", "plexDevices", "blockTags")
 
 
 def env_defaults():
     """Container-level defaults the settings page shows as placeholders, so a
     blank field reads as "inheriting this" instead of "nothing is set"."""
-    return {"hubIp": HUB_IP, "plexUsers": ENV_USERS, "plexDevices": ENV_DEVICES}
+    return {"hubIp": HUB_IP, "plexUsers": ENV_USERS,
+            "plexDevices": ENV_DEVICES, "blockTags": ENV_BLOCK_TAGS}
 
-BACKEND = os.environ.get("MEDIA_BACKEND", "plex").lower()
-if BACKEND not in ("plex", "emby", "jellyfin"):
-    BACKEND = "plex"
+BACKENDS = ("plex", "emby", "jellyfin")
+# MEDIA_BACKEND is the container-level default; the settings-page dropdown
+# overrides it without a restart. Empty or unknown means plex.
+ENV_BACKEND = os.environ.get("MEDIA_BACKEND", "").lower()
+if ENV_BACKEND not in BACKENDS:
+    ENV_BACKEND = "plex"
 
 
 def uses_emby_backend(backend):
@@ -111,12 +140,19 @@ def uses_emby_backend(backend):
     return backend in ("emby", "jellyfin")
 
 
-EMBY_FAMILY = uses_emby_backend(BACKEND)
+def media_backend(settings=None):
+    """Backend picked in settings wins; MEDIA_BACKEND env is the fallback —
+    the same rule hub_ip() follows. Resolved per poll, so a *saved* change
+    applies on the next poll without a restart."""
+    s = settings if settings is not None else load_settings()
+    chosen = (s.get("mediaBackend") or "").lower()
+    return chosen if chosen in BACKENDS else ENV_BACKEND
 
 
 def get_session():
-    """Current normalized now-playing dict from the configured backend, or None."""
-    return emby_current_session() if EMBY_FAMILY else current_session()
+    """Current now-playing dict from the configured backend, or None."""
+    return (emby_current_session() if uses_emby_backend(media_backend())
+            else current_session())
 
 OUTPUT = os.path.join(REPO, "output")
 JSON_PATH = os.path.join(OUTPUT, "now-playing.json")
@@ -125,15 +161,10 @@ SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
 THEMES = ("amber", "ice", "crimson", "emerald",
           "campaign", "concrete", "trophy", "bsides")
-TEMPLATES = ("spotlight", "split", "hero", "lowerthird", "bigclock", "street",
-             "onesheet")
+TEMPLATES = ("spotlight", "split", "hero", "lowerthird", "bigclock", "street")
 TITLE_FONTS = ("system", "bebas", "oswald", "playfair", "cinzel", "grotesk")
 ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-# The flat settings shape the card and settings pages consume. Settings are
-# stored per-profile now (see PROFILE_BASE / migrate_settings), but this stays
-# the canonical list of every key a page may read, and selftest asserts each
-# one still has a home.
 DEFAULT_SETTINGS = {
     "hubIp": "",
     "template": "spotlight",
@@ -149,83 +180,67 @@ DEFAULT_SETTINGS = {
     "showProgress": True, "showClock": True,
     "backdrop": True, "logo": True,
     "plexUsers": "", "plexDevices": "",
+    "blockTags": "",
     "rotateSeconds": 30,
     "showWeather": False, "weatherZip": "", "weatherUnits": "f",
-    "blockLayout": {},
+    "weatherFX": True, "weatherIntensity": 2,
+    "blockLayout": {},       # {template: {block: {x,y,width,scale,align,font}}}
+    "blockVisibility": {},  # {template: {block: bool}}, sparse — only overrides
+    "mediaBackend": "",       # "" = inherit MEDIA_BACKEND env (plex when unset)
+    "plexHost": "", "plexToken": "",
+    "embyHost": "", "embyKey": "",
+    "jellyfinHost": "", "jellyfinKey": "",
 }
 
-EDITABLE_BLOCKS = ("clock", "identity", "meta", "plot", "ratings",
-                   "progress", "poster", "stinger",
-                   "tagline", "badges", "tracks", "cast")
-
-CAST_MAX = 6            # top-billed actors shown on the card
-HEADSHOT_PX = (150, 150)
-
-PROFILES = ("cast", "esp")            # one Cast/Nest display, one ESP panel
-GLOBAL_KEYS = ("default", "hubIp", "plexUsers", "plexDevices", "weatherZip",
-               "rotateSeconds")
-# Globals are not all strings, so migrating and saving them needs the type.
-GLOBAL_DEFAULTS = {"hubIp": "", "plexUsers": "", "plexDevices": "",
-                   "weatherZip": "", "rotateSeconds": 30}
+# Keys/tokens are write-only: stored in settings.json but never served back to
+# a browser — /settings.json replaces each with a saved/not-saved hint.
+SECRET_SETTINGS = ("plexToken", "embyKey", "jellyfinKey")
 
 
-def coerce_global(key, value):
-    """One global setting, validated to its own type."""
-    if key == "rotateSeconds":
-        return clamp_rotate(value)
-    return value if isinstance(value, str) else GLOBAL_DEFAULTS[key]
-DENSITIES = ("full", "compact", "minimal", "custom")
-ORIENTATIONS = ("auto", "landscape", "portrait")
+def served_settings(settings=None):
+    """Settings as the browser may see them: each secret is swapped for a
+    boolean <name>Set hint, so the page can say "saved" without knowing it.
+    envBackend rides along so the page can show the container's default."""
+    s = dict(settings if settings is not None else load_settings())
+    for k in SECRET_SETTINGS:
+        s[k + "Set"] = bool(s.pop(k, ""))
+    s["envBackend"] = ENV_BACKEND
+    return s
 
-# Elements a density preset controls. Poster/title/year/contentRating/progress
-# are always on, so they are not listed here.
-DENSITY_PRESETS = {
-    "full": {"showPlot": True, "showGenres": True, "showScores": True,
-             "showMediaInfo": True, "showRuntime": True, "showClock": True,
-             "showTagline": True, "showBadges": True, "showPlayMethod": True,
-             "showTracks": True, "showCast": True, "showChapters": True},
-    "compact": {"showPlot": True, "showGenres": True, "showScores": True,
-                "showMediaInfo": True, "showRuntime": True, "showClock": True,
-                "showTagline": False, "showBadges": False, "showPlayMethod": True,
-                "showTracks": False, "showCast": False, "showChapters": False},
-    "minimal": {"showPlot": False, "showGenres": False, "showScores": False,
-                "showMediaInfo": False, "showRuntime": False, "showClock": False,
-                "showTagline": False, "showBadges": False, "showPlayMethod": False,
-                "showTracks": False, "showCast": False, "showChapters": False},
+EDITABLE_BLOCKS = ("clock", "weather", "identity", "meta", "plot", "ratings",
+                   "progress", "poster", "stinger")
+# Blocks a user can freely add to or remove from a template. Stinger is
+# excluded: it's a content-driven badge (only appears when TMDB has a
+# credits-scene tag), not something toggling it on would ever show anything.
+TOGGLEABLE_BLOCKS = ("clock", "weather", "identity", "meta", "plot",
+                     "ratings", "progress", "poster")
+# Each template's shipped block set, mirrored from the display:none rules in
+# output/index.html. A user's blockVisibility only needs to store where they
+# differ from this — the default itself never touches settings.json.
+TEMPLATE_DEFAULT_BLOCKS = {
+    "spotlight": ("clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
+    "split": ("clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
+    "hero": ("clock", "identity", "meta", "ratings", "progress"),
+    "lowerthird": ("clock", "identity", "meta", "ratings", "progress"),
+    "bigclock": ("clock", "identity", "meta", "plot", "progress"),
+    "street": ("clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
 }
-
-# Appearance keys that live inside a profile (everything not in GLOBAL_KEYS).
-PROFILE_BASE = {
-    "template": "spotlight",
-    "theme": "amber",
-    "accent": "",
-    "titleFont": "system",
-    "bodyFont": "system",
-    "posterSide": "right",
-    "clockFormat": "12h",
-    "clockSeconds": False,
-    "showContentRating": True, "showProgress": True,
-    "backdrop": True, "logo": True,
-    "showWeather": False, "weatherUnits": "f",
-    "blockLayout": {},
-    "density": "full",
-    "orientation": "auto",
-}
-
-
-def profile_defaults(density="full", **overrides):
-    """A complete profile: always-on elements + the density preset + overrides."""
-    p = dict(PROFILE_BASE)
-    p.update(DENSITY_PRESETS.get(density, DENSITY_PRESETS["full"]))
-    p["density"] = density if density in DENSITIES else "full"
-    p.update(overrides)
-    return p
 
 _meta_cache = {}  # ratingKey -> extras dict
 
 
+def plex_creds(settings=None):
+    """(host, token) for Plex: the settings page wins, PLEX_HOST/PLEX_TOKEN
+    env is the fallback — the same rule hub_ip() follows."""
+    s = settings if settings is not None else load_settings()
+    host = s.get("plexHost") or PLEX
+    token = s.get("plexToken") or TOKEN
+    return (host or "").rstrip("/"), token or ""
+
+
 def plex_url(path):
-    return f"{PLEX}{path}{'&' if '?' in path else '?'}X-Plex-Token={TOKEN}"
+    host, token = plex_creds()
+    return f"{host}{path}{'&' if '?' in path else '?'}X-Plex-Token={token}"
 
 
 def fetch_xml(path):
@@ -234,10 +249,7 @@ def fetch_xml(path):
 
 
 def atomic_write(path, data, mode="w"):
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=parent or None)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
     with os.fdopen(fd, mode) as f:
         f.write(data)
     os.replace(tmp, path)
@@ -289,105 +301,6 @@ def dashcast_active():
     return "DashCast" in catt("info").stdout
 
 
-TARGET = os.environ.get("CAST_TARGET", "nest").lower()
-if TARGET not in ("nest", "esp32"):
-    TARGET = "nest"
-
-
-def profile_url(page_url, profile):
-    """Tag a card URL with the profile whose settings it should render."""
-    if query_profile(page_url):
-        return page_url
-    sep = "&" if "?" in page_url else "?"
-    return f"{page_url}{sep}profile={profile}"
-
-
-def nest_available():
-    return bool(hub_ip())
-
-
-def nest_active():
-    return dashcast_active()
-
-
-def nest_show(page_url):
-    # profile_url always leaves a "?" behind, so "&cb=" is safe to append.
-    url = profile_url(page_url, "cast")
-    catt("cast_site", f"{url}&cb={int(time.time())}")
-
-
-def nest_hide():
-    catt("stop")
-
-
-ESP32_HOST = os.environ.get("ESP32_HOST", "")
-ESP32_PORT = int(os.environ.get("ESP32_PORT", "80"))
-
-
-def esp32_endpoint(host, port, path):
-    return f"http://{host}:{port}/{path}"
-
-
-def esp32_json_url(page_url):
-    """Derive the now-playing.json URL from PAGE_URL's origin."""
-    p = urllib.parse.urlsplit(page_url)
-    return f"{p.scheme}://{p.netloc}/now-playing.json"
-
-
-def esp32_post(path, payload=None):
-    data = json.dumps(payload or {}).encode()
-    req = urllib.request.Request(
-        esp32_endpoint(ESP32_HOST, ESP32_PORT, path), data=data,
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)
-
-
-def esp32_available():
-    if not ESP32_HOST:
-        return False
-    try:
-        with urllib.request.urlopen(
-                esp32_endpoint(ESP32_HOST, ESP32_PORT, "status"), timeout=5) as r:
-            json.load(r)
-        return True
-    except Exception:
-        return False
-
-
-def esp32_active():
-    try:
-        with urllib.request.urlopen(
-                esp32_endpoint(ESP32_HOST, ESP32_PORT, "status"), timeout=5) as r:
-            return bool(json.load(r).get("displaying"))
-    except Exception:
-        return False
-
-
-def esp32_show(page_url):
-    esp32_post("display", {"json_url": esp32_json_url(page_url)})
-
-
-def esp32_hide():
-    esp32_post("stop")
-
-
-def device_available():
-    return esp32_available() if TARGET == "esp32" else nest_available()
-
-
-def device_active():
-    return esp32_active() if TARGET == "esp32" else nest_active()
-
-
-def device_show(page_url):
-    return esp32_show(page_url) if TARGET == "esp32" else nest_show(page_url)
-
-
-def device_hide():
-    return esp32_hide() if TARGET == "esp32" else nest_hide()
-
-
 _wx_cache = {"at": 0.0, "zip": None, "loc": "", "data": {}}
 
 
@@ -436,23 +349,47 @@ def tmdb_stinger(tmdb_id):
 
 
 def transcode_to(path, plex_path, w, h):
-    inner = urllib.parse.quote(f"{plex_path}?X-Plex-Token={TOKEN}", safe="")
-    url = (f"{PLEX}/photo/:/transcode?width={w}&height={h}&minSize=1"
-           f"&upscale=1&url={inner}&X-Plex-Token={TOKEN}")
+    host, token = plex_creds()
+    inner = urllib.parse.quote(f"{plex_path}?X-Plex-Token={token}", safe="")
+    url = (f"{host}/photo/:/transcode?width={w}&height={h}&minSize=1"
+           f"&upscale=1&url={inner}&X-Plex-Token={token}")
     with urllib.request.urlopen(url, timeout=15) as r:
         atomic_write(os.path.join(OUTPUT, path), r.read(), "wb")
 
 
+def env_first(*names):
+    """First non-empty env var among names; "" when none is set. An
+    empty-but-present var counts as unset — a compose file that lists
+    `JELLYFIN_HOST: ""` next to a filled EMBY_HOST must not shadow it."""
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return ""
+
+
 # Jellyfin honors the same api_key query auth and endpoint shapes as Emby, so
-# JELLYFIN_HOST/JELLYFIN_API_KEY are accepted as aliases and fall back to the
-# EMBY_ names. Either pair works with either backend value.
-EMBY = os.environ.get("JELLYFIN_HOST", os.environ.get("EMBY_HOST", "")).rstrip("/")
-EMBY_KEY = os.environ.get("JELLYFIN_API_KEY", os.environ.get("EMBY_API_KEY", ""))
+# either env pair works with either backend; the pair matching the backend
+# name wins when both are set. A host/key stored from the settings page wins
+# over env — the same rule hub_ip() follows.
+def emby_creds(backend=None, settings=None):
+    """(host, key) for the emby-family backend in force."""
+    s = settings if settings is not None else load_settings()
+    if backend is None:
+        backend = media_backend(s)
+    if backend == "jellyfin":
+        host = s.get("jellyfinHost") or env_first("JELLYFIN_HOST", "EMBY_HOST")
+        key = s.get("jellyfinKey") or env_first("JELLYFIN_API_KEY", "EMBY_API_KEY")
+    else:
+        host = s.get("embyHost") or env_first("EMBY_HOST", "JELLYFIN_HOST")
+        key = s.get("embyKey") or env_first("EMBY_API_KEY", "JELLYFIN_API_KEY")
+    return (host or "").rstrip("/"), key or ""
 
 
-def emby_url(path):
-    base = EMBY + path
-    return f"{base}{'&' if '?' in base else '?'}api_key={EMBY_KEY}"
+def emby_url(path, creds=None):
+    host, key = creds or emby_creds()
+    base = host + path
+    return f"{base}{'&' if '?' in base else '?'}api_key={key}"
 
 
 def emby_fetch_json(path):
@@ -466,7 +403,8 @@ def emby_image_url(host, key, item_id, kind, w=600, h=900):
 
 
 def emby_save_image(item_id, kind, out_name, w, h):
-    url = emby_image_url(EMBY, EMBY_KEY, item_id, kind, w, h)
+    host, key = emby_creds()
+    url = emby_image_url(host, key, item_id, kind, w, h)
     with urllib.request.urlopen(url, timeout=15) as r:
         atomic_write(os.path.join(OUTPUT, out_name), r.read(), "wb")
 
@@ -505,23 +443,6 @@ def emby_download_art(item):
     return out
 
 
-def emby_billed_cast(people):
-    """Top-billed actors, in one place, so the contract list and the saved
-    headshot filenames (cast/N.jpg) share an index space."""
-    return [p for p in (people or [])
-            if p.get("Type") == "Actor" and p.get("Name")][:CAST_MAX]
-
-
-def emby_download_cast(people):
-    """Save headshots for the billed cast into output/cast/N.jpg."""
-    for i, p in enumerate(emby_billed_cast(people)):
-        if p.get("Id") and p.get("PrimaryImageTag"):
-            try:
-                emby_save_image(p["Id"], "Primary", f"cast/{i}.jpg", *HEADSHOT_PX)
-            except Exception as e:
-                print(f"emby cast art failed: {e}", flush=True)
-
-
 def download_art(item, rating_key):
     """Save poster.jpg, backdrop.jpg, logo.png into output/."""
     out = {"poster": False, "backdrop": False, "logo": False}
@@ -547,26 +468,13 @@ def library_extras(rating_key, is_movie=False):
     """Genres, IMDb, stinger, art/logo from the full metadata record; cached per item."""
     if rating_key in _meta_cache:
         return _meta_cache[rating_key]
-    x = {"genres": [], "imdb": None, "stinger": [], "chapters": [], "cast": [],
+    x = {"genres": [], "imdb": None, "stinger": [],
          "poster": False, "backdrop": False, "logo": False}
     try:
-        root = fetch_xml(f"/library/metadata/{rating_key}?includeRatings=1&includeChapters=1")
+        root = fetch_xml(f"/library/metadata/{rating_key}?includeRatings=1")
         item = root.find("./*")
         if item is not None:
             x["genres"] = [g.get("tag") for g in item.findall("Genre") if g.get("tag")]
-            x["chapters"] = [int(c.get("startTimeOffset"))
-                             for c in item.findall("Chapter")
-                             if c.get("startTimeOffset") is not None]
-            # one filtered list so x["cast"][i] lines up with cast/{i}.jpg
-            roles = [r for r in item.findall("Role") if r.get("tag")][:CAST_MAX]
-            x["cast"] = [{"name": r.get("tag"), "role": r.get("role") or "",
-                          "thumb": bool(r.get("thumb"))} for r in roles]
-            for i, r in enumerate(roles):
-                if r.get("thumb"):
-                    try:
-                        transcode_to(f"cast/{i}.jpg", r.get("thumb"), *HEADSHOT_PX)
-                    except Exception as e:
-                        print(f"plex cast art failed: {e}", flush=True)
             for r in item.findall("Rating"):
                 if (r.get("image") or "").startswith("imdb://") and r.get("value"):
                     x["imdb"] = float(r.get("value"))
@@ -615,7 +523,7 @@ def emby_resolution(width, height=None):
 
 
 def parse_emby_session(session, extras):
-    """One Emby /Sessions entry -> normalized now-playing dict (matches Plex)."""
+    """One Emby /Sessions entry -> now-playing dict (same shape as Plex)."""
     item = session.get("NowPlayingItem") or {}
     play = session.get("PlayState") or {}
     is_episode = item.get("Type") == "Episode"
@@ -639,9 +547,6 @@ def parse_emby_session(session, extras):
         info["runtime"] = f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m"
     if item.get("Overview"):
         info["summary"] = item["Overview"]
-    taglines = item.get("Taglines") or []
-    if taglines:
-        info["tagline"] = taglines[0]
     if item.get("OfficialRating"):
         info["contentRating"] = item["OfficialRating"]
     genres = [g for g in (item.get("Genres") or []) if g]
@@ -656,19 +561,6 @@ def parse_emby_session(session, extras):
     media = " · ".join(p for p in parts if p)
     if media:
         info["media"] = media
-    if play.get("PlayMethod"):
-        info["playMethod"] = play["PlayMethod"].lower()
-    def _emby_stream(idx):
-        if idx is None:
-            return None
-        s = next((m for m in streams if m.get("Index") == idx), None)
-        return s.get("DisplayTitle") if s else None
-    audio_track = _emby_stream(play.get("AudioStreamIndex"))
-    subtitle_track = _emby_stream(play.get("SubtitleStreamIndex"))
-    if audio_track:
-        info["audioTrack"] = audio_track
-    if subtitle_track:
-        info["subtitleTrack"] = subtitle_track
     scores = {}
     if item.get("CommunityRating"):
         scores["imdb"] = round(float(item["CommunityRating"]), 1)
@@ -677,21 +569,6 @@ def parse_emby_session(session, extras):
         scores["rtCriticFresh"] = float(item["CriticRating"]) >= 60
     if scores:
         info["scores"] = scores
-    chapters = [emby_ticks_to_ms(c.get("StartPositionTicks"))
-                for c in (item.get("Chapters") or [])]
-    chapters = [c for c in chapters if c is not None]
-    if chapters:
-        info["chapters"] = chapters
-    ud = item.get("UserData") or {}
-    if "Played" in ud:
-        info["watched"] = bool(ud.get("Played"))   # NOT PlayCount — verified
-    if "IsFavorite" in ud:
-        info["favorite"] = bool(ud.get("IsFavorite"))
-    cast = [{"name": p["Name"], "role": p.get("Role") or "",
-             "thumb": bool(p.get("PrimaryImageTag"))}
-            for p in emby_billed_cast(item.get("People"))]
-    if cast:
-        info["cast"] = cast
     x = extras(item)
     if x.get("stinger"):
         info["stinger"] = x["stinger"]
@@ -727,10 +604,6 @@ def parse_session(video, extras=library_extras):
                             "durationMs": int(a("duration"))}
     if a("summary"):
         info["summary"] = a("summary")
-    if a("tagline"):
-        info["tagline"] = a("tagline")
-    if a("viewCount") is not None:
-        info["watched"] = int(a("viewCount") or 0) > 0
     if x["genres"]:
         info["genres"] = x["genres"][:3]
     if x["stinger"]:
@@ -738,10 +611,6 @@ def parse_session(video, extras=library_extras):
     info["poster"] = x["poster"]
     info["backdrop"] = x["backdrop"]
     info["logo"] = x["logo"]
-    if x.get("chapters"):
-        info["chapters"] = x["chapters"]
-    if x.get("cast"):
-        info["cast"] = x["cast"]
     if a("contentRating"):
         info["contentRating"] = a("contentRating")
     if a("duration"):
@@ -753,22 +622,6 @@ def parse_session(video, extras=library_extras):
                  (media.get("videoCodec") or "").upper() or None,
                  (media.get("audioCodec") or "").upper() or None]
         info["media"] = " · ".join(p for p in parts if p)
-    part = media.find("Part") if media is not None else None
-    if video.find("TranscodeSession") is not None:
-        info["playMethod"] = "transcode"
-    elif media is not None:
-        decision = part.get("decision") if part is not None else None
-        info["playMethod"] = {"copy": "directstream",
-                              "transcode": "transcode"}.get(decision, "directplay")
-    if part is not None:
-        for stream in part.findall("Stream"):
-            if stream.get("selected") != "1":
-                continue
-            label = stream.get("displayTitle") or stream.get("extendedDisplayTitle")
-            if stream.get("streamType") == "2" and label:
-                info["audioTrack"] = label
-            elif stream.get("streamType") == "3" and label:
-                info["subtitleTrack"] = label
     scores = {}
     if "rottentomatoes" in (a("ratingImage") or "") and a("rating"):
         scores["rtCritic"] = round(float(a("rating")) * 10)
@@ -857,10 +710,10 @@ def session_allowed(video, users=None, devices=None):
 LAST_SESSIONS = []  # every active session from the last poll, filtered or not
 
 # The card page fetches /now-playing.json every POLL seconds. When it stops, the
-# page is gone even if the display still reports the DashCast app as loaded.
-# `at` is only ever set by a real request, so /healthz reports the truth. The
-# startup grace window is tracked separately rather than by faking a poll --
-# seeding `at` made a card that had never polled look alive.
+# page is gone even if the Hub still reports the DashCast app as loaded.
+# `at` is only ever set by a real request, so /healthz reports the truth; the
+# grace window a freshly cast page gets is tracked separately rather than by
+# faking a poll -- seeding `at` would make a card that never polled look alive.
 LAST_CARD_POLL = {"at": 0.0}
 CARD_GRACE = {"until": 0.0}
 CARD_TIMEOUT = max(45, POLL * 6)
@@ -872,15 +725,26 @@ def card_alive(now, last_poll, timeout=CARD_TIMEOUT):
 
 
 def card_ok(now, last_poll, grace_until, timeout=CARD_TIMEOUT):
-    """Leave the display alone: the card is polling, or an already-cast page is
-    still inside the grace window we give it to check in after a restart."""
+    """Leave the Hub alone: the card is polling, or a freshly cast page is still
+    inside the window we give it to load and check in."""
     return card_alive(now, last_poll, timeout) or now < grace_until
+
+
+def cast_card():
+    """Load the card on the Hub, and let it be silent for one timeout window."""
+    sep = "&" if "?" in PAGE_URL else "?"
+    catt("cast_site", f"{PAGE_URL}{sep}cb={int(time.time())}")
+    CARD_GRACE["until"] = time.time() + CARD_TIMEOUT
 
 
 def current_session():
     s = load_settings()
+    host, token = plex_creds(s)
+    if not (host and token):
+        return None   # not configured yet — the settings page can fix it live
     users = filter_set(s.get("plexUsers"), ENV_USERS)
     devices = filter_set(s.get("plexDevices"), ENV_DEVICES)
+    block = filter_set(s.get("blockTags"), ENV_BLOCK_TAGS)
     root = fetch_xml("/status/sessions")
     seen, allowed = [], []
     for video in root.findall("Video"):
@@ -888,7 +752,8 @@ def current_session():
             continue
         u, d = session_names(video)
         title = video.get("title") or ""
-        ok = session_allowed(video, users, devices)
+        ok = (session_allowed(video, users, devices)
+              and not content_blocked(block, plex_item_terms(video)))
         seen.append({"user": u, "device": d, "title": title, "allowed": ok})
         if ok:
             allowed.append((session_sort_key(u, d, title), video))
@@ -959,41 +824,34 @@ def emby_extras(item):
         x.update(emby_download_art(item))
     except Exception as e:
         print(f"emby art failed: {e}", flush=True)
-    try:
-        emby_download_cast(item.get("People") or [])
-    except Exception as e:
-        print(f"emby cast art failed: {e}", flush=True)
     if key:
         _emby_meta_cache.clear()  # only ever need the current item
         _emby_meta_cache[key] = x
     return x
 
 
-def emby_enrich(item, user_id=None):
-    """Fetch the fields /Sessions omits (People, UserData, and any missing
-    genres/streams) from /Items once per title, cached, and merge in place."""
+def emby_enrich(item):
+    """Fetch the fields /Sessions omits (genres, streams, ratings, overview)
+    from /Items once per title, cached, and merge them in place."""
     key = item.get("Id")
     if not key:
         return
     if key not in _emby_enrich_cache:
         enriched = {}
         try:
-            fields = ("Genres,MediaStreams,ProviderIds,Overview,OfficialRating,"
-                      "CommunityRating,CriticRating,People,UserData,Taglines,Chapters")
-            uid = f"&UserId={user_id}" if user_id else ""
-            data = emby_fetch_json(f"/Items?Ids={key}{uid}&Fields={fields}")
+            fields = ("Genres,MediaStreams,ProviderIds,Overview,"
+                      "OfficialRating,CommunityRating,CriticRating")
+            data = emby_fetch_json(f"/Items?Ids={key}&Fields={fields}")
             items = data.get("Items") if isinstance(data, dict) else None
             full = items[0] if items else {}
-            for f in ("Genres", "MediaStreams", "ProviderIds", "Overview",
-                      "OfficialRating", "CommunityRating", "CriticRating",
-                      "People", "UserData", "Taglines", "Chapters"):
+            for f in fields.split(","):
                 if full.get(f) is None:
                     continue
                 have = item.get(f)
                 if isinstance(have, dict) and isinstance(full[f], dict):
-                    # /Sessions can return a partial dict (e.g. UserData with only
-                    # PlaybackPositionTicks). A truthy-but-partial dict must still
-                    # gain the missing keys; values already on the session win.
+                    # /Sessions can return a partial dict. A truthy-but-partial
+                    # dict must still gain the missing keys; values already on
+                    # the session win.
                     merged = {**full[f], **have}
                     if merged != have:
                         enriched[f] = merged
@@ -1007,201 +865,153 @@ def emby_enrich(item, user_id=None):
 
 
 def emby_current_session():
-    settings = load_settings()
-    users = filter_set(settings.get("plexUsers"), ENV_USERS)
-    devices = filter_set(settings.get("plexDevices"), ENV_DEVICES)
+    s = load_settings()
+    host, key = emby_creds(settings=s)
+    if not (host and key):
+        return None   # not configured yet — the settings page can fix it live
+    users = filter_set(s.get("plexUsers"), ENV_USERS)
+    devices = filter_set(s.get("plexDevices"), ENV_DEVICES)
+    block = filter_set(s.get("blockTags"), ENV_BLOCK_TAGS)
     sessions = emby_fetch_json("/Sessions")
     seen, allowed = [], []
-    for s in sessions:
-        item = s.get("NowPlayingItem")
+    for session in sessions:
+        item = session.get("NowPlayingItem")
         if not item or item.get("Type") not in ("Movie", "Episode"):
             continue
-        u, d = emby_session_names(s)
+        u, d = emby_session_names(session)
         title = item.get("Name") or ""
-        ok = emby_session_allowed(s, users, devices)
+        ok = (emby_session_allowed(session, users, devices)
+              and not content_blocked(block, emby_item_terms(item)))
         seen.append({"user": u, "device": d, "title": title, "allowed": ok})
         if ok:
-            allowed.append((session_sort_key(u, d, title), s))
+            allowed.append((session_sort_key(u, d, title), session))
     LAST_SESSIONS[:] = seen
     # Emby's /Sessions order tracks activity, so "the first allowed session"
     # flipped between two people's titles on an arbitrary poll. Sort, then let
-    # the clock decide whose turn it is.
+    # the clock decide whose turn it is — same rotation as the Plex path.
     allowed.sort(key=lambda pair: pair[0])
     match = rotate_pick([session for _, session in allowed],
-                        clamp_rotate(settings.get("rotateSeconds")))
+                        clamp_rotate(s.get("rotateSeconds")))
     if match is None:
         return None
-    emby_enrich(match.get("NowPlayingItem") or {}, user_id=match.get("UserId"))
+    item = match.get("NowPlayingItem") or {}
+    emby_enrich(item)
+    # /Sessions sometimes omits Genres; the enriched record is authoritative.
+    # Better a blank display than an overshare the pre-filter couldn't see.
+    if content_blocked(block, emby_item_terms(item)):
+        return None
     return parse_emby_session(match, extras=emby_extras)
 
 
-def migrate_settings(raw):
-    """Normalize any saved settings into the profile schema.
+def migrate_block_layout(value, current_template):
+    """blockLayout used to be flat ({block: position}), applied to every
+    template at once — nudging a block in Spotlight silently moved it in
+    Street too. Nest it under the template the user was last on, so an
+    upgrade doesn't change what they see; other templates start clean rather
+    than inheriting a position nobody meant for them.
 
-    Accepts the legacy flat object (appearance keys at top level), the current
-    profile schema, or junk. Idempotent: migrating twice changes nothing.
+    ponytail: one-shot migration, no version flag. Once this has shipped for
+    a while and old flat saves are gone, this can be deleted along with the
+    isinstance branch that triggers it.
     """
-    if not isinstance(raw, dict):
-        raw = {}
-    out = {"default": "cast"}
-    for k in GLOBAL_KEYS[1:]:        # hubIp, session filters, zip, rotation
-        out[k] = coerce_global(k, raw.get(k, GLOBAL_DEFAULTS[k]))
-    if raw.get("default") in PROFILES:
-        out["default"] = raw["default"]
-
-    saved = raw.get("profiles")
-    saved = saved if isinstance(saved, dict) else {}
-    # legacy flat appearance keys become the cast profile's starting point
-    legacy = {k: v for k, v in raw.items()
-              if k not in GLOBAL_KEYS and k != "profiles"}
-
-    out["profiles"] = {}
-    for name, seed in (("cast", profile_defaults("full")),
-                       ("esp", profile_defaults("compact",
-                                                orientation="portrait",
-                                                template="onesheet"))):
-        profile = dict(seed)
-        source = saved.get(name)
-        if isinstance(source, dict):
-            profile.update({k: v for k, v in source.items() if k in seed})
-        elif name == "cast":
-            profile.update({k: v for k, v in legacy.items() if k in seed})
-        out["profiles"][name] = profile
-    return out
+    if not isinstance(value, dict):
+        return {}
+    if not value or any(k in TEMPLATES for k in value):
+        return value  # already nested (or empty)
+    return {current_template: value}
 
 
-def resolve_settings(raw, profile=None):
-    """Flatten the profile schema for one display: globals + that profile.
-
-    Returns the same flat shape the card page and settings page have always
-    consumed, so `?profile=` is the only thing a caller needs to know about.
-    """
-    if profile not in PROFILES:
-        profile = raw.get("default", "cast")
-    if profile not in PROFILES:
-        profile = "cast"
-    flat = {k: raw[k] for k in GLOBAL_KEYS[1:] if k in raw}
-    flat.update(raw["profiles"][profile])
-    return flat
-
-
-def sanitize_profile(seed, body):
-    """Validate a flat settings body into a complete profile dict."""
-    p = dict(seed)
-    p.update({k: v for k, v in body.items() if k in seed})
-    if p["template"] not in TEMPLATES:
-        p["template"] = "spotlight"
-    if p["theme"] not in THEMES:
-        p["theme"] = "amber"
-    if p["titleFont"] not in TITLE_FONTS:
-        p["titleFont"] = "system"
-    if p["bodyFont"] not in TITLE_FONTS:
-        p["bodyFont"] = "system"
-    if p["posterSide"] not in ("left", "right"):
-        p["posterSide"] = "right"
-    if p["clockFormat"] not in ("12h", "24h"):
-        p["clockFormat"] = "12h"
-    if p["weatherUnits"] not in ("f", "c"):
-        p["weatherUnits"] = "f"
-    if p["density"] not in DENSITIES:
-        p["density"] = "full"
-    if p["orientation"] not in ORIENTATIONS:
-        p["orientation"] = "auto"
-    if not (isinstance(p["accent"], str)
-            and (p["accent"] == "" or ACCENT_RE.match(p["accent"]))):
-        p["accent"] = ""
-    for key in seed:
-        if key.startswith("show") or key in ("backdrop", "logo", "clockSeconds"):
-            p[key] = bool(p[key])
-    p["blockLayout"] = clean_block_layout(p["blockLayout"])
-    return p
-
-
-def save_settings(raw, body, profile=None):
-    """Merge a flat settings body into `raw`: globals up top, appearance into
-    the named profile. Other profiles are left untouched."""
-    if profile not in PROFILES:
-        profile = raw.get("default", "cast")
-    if profile not in PROFILES:
-        profile = "cast"
-    out = {k: v for k, v in raw.items() if k != "profiles"}
-    for k in GLOBAL_KEYS[1:]:
-        out[k] = coerce_global(k, body.get(k, out.get(k, GLOBAL_DEFAULTS[k])))
-    if not (out["hubIp"] == "" or IP_RE.match(out["hubIp"])):
-        out["hubIp"] = ""
-    out["weatherZip"] = out["weatherZip"].strip()[:10]
-    out["profiles"] = dict(raw["profiles"])
-    out["profiles"][profile] = sanitize_profile(raw["profiles"][profile], body)
-    return out
-
-
-def public_settings(raw, profile=None):
-    """One profile's appearance, without the globals.
-
-    /api/settings is CORS-enabled, so any page in the user's browser can read
-    it. A display only needs to know how to draw itself; hubIp, the session
-    filters, and weatherZip stay on the same-origin /settings.json.
-    """
-    return {k: v for k, v in resolve_settings(raw, profile).items()
-            if k not in GLOBAL_KEYS}
-
-
-def query_profile(path):
-    """?profile=<name> from a request path, or None when absent/unknown."""
-    query = urllib.parse.urlsplit(path).query
-    name = urllib.parse.parse_qs(query).get("profile", [None])[0]
-    return name if name in PROFILES else None
-
-
-def load_raw_settings():
-    """The on-disk profile schema, migrated and defaulted."""
+def load_settings():
     try:
         with open(SETTINGS_PATH) as f:
-            return migrate_settings(json.load(f))
+            saved = json.load(f)
+        merged = {**DEFAULT_SETTINGS, **{k: v for k, v in saved.items() if k in DEFAULT_SETTINGS}}
+        merged["blockLayout"] = migrate_block_layout(
+            merged["blockLayout"], merged.get("template") or "spotlight")
+        return merged
     except Exception:
-        return migrate_settings({})
+        return dict(DEFAULT_SETTINGS)
 
 
-def load_settings(profile=None):
-    """Flat settings for one display (default profile when unspecified)."""
-    return resolve_settings(load_raw_settings(), profile)
+def clean_block_position(position):
+    """One block's {x,y,width,scale,align,font}, numbers clamped to sane
+    ranges, unknown keys dropped."""
+    item = {}
+    for key, low, high in (("x", -100, 100), ("y", -100, 100),
+                           ("width", 5, 100), ("scale", 0.3, 3)):
+        number = position.get(key)
+        if isinstance(number, (int, float)) and not isinstance(number, bool):
+            item[key] = round(max(low, min(high, number)), 2)
+    if position.get("align") in ("left", "center", "right"):
+        item["align"] = position["align"]
+    if position.get("font") in TITLE_FONTS:
+        item["font"] = position["font"]
+    return item
 
 
 def clean_block_layout(value):
-    """Keep layout overrides small, numeric, and limited to known card blocks."""
+    """{template: {block: position}}, limited to known templates/blocks."""
     if not isinstance(value, dict):
         return {}
     cleaned = {}
-    for name, position in value.items():
-        if name not in EDITABLE_BLOCKS or not isinstance(position, dict):
+    for template, blocks in value.items():
+        if template not in TEMPLATES or not isinstance(blocks, dict):
             continue
-        item = {}
-        for key, low, high in (("x", -100, 100), ("y", -100, 100),
-                               ("width", 5, 100), ("scale", 0.3, 3)):
-            number = position.get(key)
-            if isinstance(number, (int, float)) and not isinstance(number, bool):
-                item[key] = round(max(low, min(high, number)), 2)
-        if position.get("align") in ("left", "center", "right"):
-            item["align"] = position["align"]
-        if position.get("font") in TITLE_FONTS:
-            item["font"] = position["font"]
-        if item:
-            cleaned[name] = item
+        per_template = {}
+        for name, position in blocks.items():
+            if name not in EDITABLE_BLOCKS or not isinstance(position, dict):
+                continue
+            item = clean_block_position(position)
+            if item:
+                per_template[name] = item
+        if per_template:
+            cleaned[template] = per_template
     return cleaned
+
+
+def clean_block_visibility(value):
+    """{template: {block: bool}} — sparse overrides of TEMPLATE_DEFAULT_BLOCKS.
+    Only TOGGLEABLE_BLOCKS may be hidden/shown; stinger is content-driven."""
+    if not isinstance(value, dict):
+        return {}
+    cleaned = {}
+    for template, blocks in value.items():
+        if template not in TEMPLATES or not isinstance(blocks, dict):
+            continue
+        per_template = {name: bool(shown) for name, shown in blocks.items()
+                        if name in TOGGLEABLE_BLOCKS and isinstance(shown, bool)}
+        if per_template:
+            cleaned[template] = per_template
+    return cleaned
+
+
+def visible_blocks(template, visibility):
+    """The block set actually shown for a template: its shipped default,
+    with this template's blockVisibility overrides applied."""
+    shown = set(TEMPLATE_DEFAULT_BLOCKS.get(template, ()))
+    for name, on in (visibility or {}).get(template, {}).items():
+        shown.add(name) if on else shown.discard(name)
+    return shown
+
+
+def clean_intensity(value):
+    """Weather effect intensity: an int 1..4, default 2."""
+    try:
+        return min(4, max(1, int(value)))
+    except (TypeError, ValueError):
+        return 2
 
 
 class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def _send(self, body, ctype="text/html; charset=utf-8", code=200, cors=False):
+    def _send(self, body, ctype="text/html; charset=utf-8", code=200):
         data = body if isinstance(body, bytes) else body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
-        if cors:  # let LAN dashboards / HA fetch the read-only card state
-            self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1216,53 +1026,35 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/settings.json":
-            self._send(json.dumps(load_settings(query_profile(self.path))),
-                       "application/json")
+            self._send(json.dumps(served_settings()), "application/json")
         elif path == "/devices":
             self._send(json.dumps(scan_devices("refresh" in self.path)),
                        "application/json")
         elif path == "/env-defaults":
             # Allowlisted container defaults, so the settings page can render a
             # blank field as "inheriting this" rather than "nothing is set".
-            # Never CORS: this is same-origin only.
             self._send(json.dumps(env_defaults()), "application/json")
         elif path == "/weather":
             self._send(json.dumps(weather()), "application/json")
         elif path == "/sessions":
             self._send(json.dumps({"sessions": LAST_SESSIONS}), "application/json")
+        elif path == "/now-playing.json":
+            # Served explicitly rather than through the static fallthrough so we
+            # can timestamp the card's heartbeat -- see card_alive().
+            LAST_CARD_POLL["at"] = time.time()
+            self._send_file(JSON_PATH)
         elif path == "/healthz":
             last, now = LAST_CARD_POLL["at"], time.time()
             self._send(json.dumps({
                 "ok": True, "version": VERSION,
                 # Seconds since the card actually fetched now-playing.json; null
-                # means it has never polled. A number climbing past CARD_TIMEOUT
-                # is a display showing a dead page.
+                # means it has never polled. A number past CARD_TIMEOUT is a Hub
+                # showing a dead page.
                 "cardPollAgo": round(now - last, 1) if last else None,
                 "cardAlive": card_alive(now, last),
                 # True while a freshly cast page is still allowed to be silent.
                 "cardGrace": now < CARD_GRACE["until"],
             }), "application/json")
-        elif path in ("/now-playing.json", "/api/now-playing.json"):
-            # Intentional read-only API for ESP32/ESPHome/HA consumers (CORS-enabled).
-            # Serving it here rather than through the static fallthrough lets us
-            # timestamp the card's heartbeat -- see card_alive().
-            LAST_CARD_POLL["at"] = time.time()
-            try:
-                with open(JSON_PATH) as f:
-                    body = f.read()
-            except Exception:
-                body = json.dumps({"playing": False})
-            self._send(body, "application/json", cors=path.startswith("/api/"))
-        elif path == "/api/settings":
-            # Read-only, CORS-enabled: an ESP/ESPHome panel fetches the layout
-            # and element visibility for its own profile. Appearance only --
-            # see public_settings().
-            self._send(json.dumps(public_settings(load_raw_settings(),
-                                                  query_profile(self.path))),
-                       "application/json", cors=True)
-        elif path == "/api/healthz":
-            self._send(json.dumps({"ok": True, "version": VERSION}),
-                       "application/json", cors=True)
         elif path == "/release-notes":
             self._send_file(os.path.join(REPO, "CHANGELOG.md"))
         elif path in ("/", "/settings"):
@@ -1278,9 +1070,63 @@ class WebHandler(BaseHTTPRequestHandler):
             return self._send("not found", "text/plain", 404)
         try:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            updated = save_settings(load_raw_settings(), body,
-                                    query_profile(self.path))
-            atomic_write(SETTINGS_PATH, json.dumps(updated))
+            merged = {**DEFAULT_SETTINGS,
+                      **{k: v for k, v in body.items() if k in DEFAULT_SETTINGS}}
+            if merged["posterSide"] not in ("left", "right"):
+                merged["posterSide"] = "right"
+            if merged["theme"] not in THEMES:
+                merged["theme"] = "amber"
+            if merged["template"] not in TEMPLATES:
+                merged["template"] = "spotlight"
+            if merged["clockFormat"] not in ("12h", "24h"):
+                merged["clockFormat"] = "12h"
+            if merged["titleFont"] not in TITLE_FONTS:
+                merged["titleFont"] = "system"
+            if merged["bodyFont"] not in TITLE_FONTS:
+                merged["bodyFont"] = "system"
+            merged["rotateSeconds"] = clamp_rotate(merged["rotateSeconds"])
+            for k in ("plexUsers", "plexDevices", "blockTags", "weatherZip",
+                      "plexHost", "embyHost", "jellyfinHost"):
+                if not isinstance(merged[k], str):
+                    merged[k] = ""
+            for k in ("plexHost", "embyHost", "jellyfinHost"):
+                merged[k] = merged[k].strip()
+            if merged["mediaBackend"] not in ("",) + BACKENDS:
+                merged["mediaBackend"] = ""
+            # Keys/tokens are write-only: a blank field keeps the stored value
+            # (the page never sees it, so it cannot echo it back).
+            saved = load_settings()
+            for k in SECRET_SETTINGS:
+                typed = merged[k].strip() if isinstance(merged[k], str) else ""
+                merged[k] = typed or saved.get(k, "")
+            # Refuse to point the marquee at a backend that has no server
+            # configured anywhere — a saved-but-dead backend fails silently.
+            chosen = merged["mediaBackend"] or ENV_BACKEND
+            if chosen == "plex":
+                host, key = plex_creds(merged)
+            else:
+                host, key = emby_creds(chosen, merged)
+            if not (host and key):
+                what = "token" if chosen == "plex" else "API key"
+                raise ValueError(
+                    f"{chosen} backend: enter its server address and {what} "
+                    "(or set them in the container)")
+            merged["weatherZip"] = merged["weatherZip"].strip()[:10]
+            if merged["weatherUnits"] not in ("f", "c"):
+                merged["weatherUnits"] = "f"
+            merged["showWeather"] = bool(merged["showWeather"])
+            merged["weatherFX"] = bool(merged["weatherFX"])
+            merged["weatherIntensity"] = clean_intensity(merged["weatherIntensity"])
+            merged["clockSeconds"] = bool(merged["clockSeconds"])
+            if not (isinstance(merged["accent"], str)
+                    and (merged["accent"] == "" or ACCENT_RE.match(merged["accent"]))):
+                merged["accent"] = ""
+            if not (isinstance(merged["hubIp"], str)
+                    and (merged["hubIp"] == "" or IP_RE.match(merged["hubIp"]))):
+                merged["hubIp"] = ""
+            merged["blockLayout"] = clean_block_layout(merged["blockLayout"])
+            merged["blockVisibility"] = clean_block_visibility(merged["blockVisibility"])
+            atomic_write(SETTINGS_PATH, json.dumps(merged))
             self._send(json.dumps({"ok": True}), "application/json")
         except Exception as e:
             self._send(json.dumps({"ok": False, "error": str(e)}), "application/json", 400)
@@ -1292,62 +1138,62 @@ def serve_web():
 
 def loop():
     os.makedirs(DATA_DIR, exist_ok=True)
-    if EMBY_FAMILY:
-        host_name = "JELLYFIN_HOST" if BACKEND == "jellyfin" else "EMBY_HOST"
-        key_name = "JELLYFIN_API_KEY" if BACKEND == "jellyfin" else "EMBY_API_KEY"
-        required = (("PAGE_URL", PAGE_URL), (host_name, EMBY), (key_name, EMBY_KEY))
-    else:
-        required = (("PAGE_URL", PAGE_URL), ("PLEX_HOST", PLEX),
-                    ("PLEX_TOKEN", TOKEN))
-    missing = [name for name, value in required if not value]
-    if missing:
-        raise SystemExit("Missing required environment variables: " + ", ".join(missing))
+    # Only PAGE_URL is fatal: every media-server credential can be entered on
+    # the settings page, so a missing one warns and keeps serving — a running
+    # settings page beats a crash loop.
+    if not PAGE_URL:
+        raise SystemExit("Missing required environment variables: PAGE_URL")
+    backend = media_backend()
+    ready = all(plex_creds()) if backend == "plex" else all(emby_creds(backend))
+    if not ready:
+        names = {"plex": "PLEX_HOST/PLEX_TOKEN",
+                 "emby": "EMBY_HOST/EMBY_API_KEY",
+                 "jellyfin": "JELLYFIN_HOST/JELLYFIN_API_KEY"}[backend]
+        print(f"{backend}: no server configured yet — set {names}, or enter "
+              "them on the settings page", flush=True)
     if not os.path.exists(SETTINGS_PATH):
-        atomic_write(SETTINGS_PATH, json.dumps(migrate_settings({})))
+        atomic_write(SETTINGS_PATH, json.dumps(DEFAULT_SETTINGS))
     threading.Thread(target=serve_web, daemon=True).start()
     print(f"Marquee {VERSION} ready on :{SERVE_PORT} (card: /image, settings: /)",
           flush=True)
-    # Grace period: an already-cast card gets one CARD_TIMEOUT window to check
-    # in before we decide it is dead, so a restart does not re-cast needlessly.
-    # This must not touch LAST_CARD_POLL -- /healthz would then report a card
-    # that has never polled as alive.
+    # A card cast before this restart gets one window to check in, so restarting
+    # the container does not needlessly re-cast a perfectly good page. This must
+    # not touch LAST_CARD_POLL, or /healthz would report it as alive.
     CARD_GRACE["until"] = time.time() + CARD_TIMEOUT
     # Poll sessions fast (5s) so json/poster/hub flip together on play/stop;
     # talk to the hub only on transitions, plus a slow reconcile pass.
     last_playing, tick = None, 0
     while True:
         try:
+            backend = media_backend()
             info = get_session()
             atomic_write(JSON_PATH, json.dumps(info or {"playing": False}))
             playing = bool(info)
             if playing != last_playing or tick % 6 == 0:
-                if not device_available():
+                if not hub_ip():
                     if playing and playing != last_playing:
-                        print("no display configured — pick a Nest device on the "
-                              "settings page, or set HUB_IP / ESP32_HOST", flush=True)
+                        print("no cast device configured — pick one on the "
+                              "settings page or set HUB_IP", flush=True)
                 else:
-                    shown = device_active()
-                    # "shown" only means the DashCast app is loaded. A display
-                    # whose page died keeps reporting it, so the loop would sit
-                    # there forever in front of a blank screen. The card's own
-                    # heartbeat is the ground truth.
+                    dash = dashcast_active()
+                    # `dash` only means the DashCast app is loaded. A Hub whose
+                    # page died keeps reporting it, so without the card's own
+                    # heartbeat the loop sits here forever in front of a blank
+                    # screen, casting nothing and logging nothing.
                     ok = card_ok(time.time(), LAST_CARD_POLL["at"],
                                  CARD_GRACE["until"])
-                    if playing and not shown:
-                        print(f"{BACKEND} playing ({info['title']}) -> showing",
-                              flush=True)
-                        device_show(PAGE_URL)
-                        CARD_GRACE["until"] = time.time() + CARD_TIMEOUT
+                    if playing and not dash:
+                        print(f"{backend} playing ({info['title']}) -> casting", flush=True)
+                        cast_card()
                     elif playing and not ok:
                         last = LAST_CARD_POLL["at"]
-                        gone = (f"{time.time() - last:.0f}s" if last else "ever")
-                        print(f"display claims to be showing but the card has "
-                              f"not polled in {gone} -> re-casting", flush=True)
-                        device_show(PAGE_URL)
-                        CARD_GRACE["until"] = time.time() + CARD_TIMEOUT
-                    elif not playing and shown:
-                        print(f"{BACKEND} idle -> releasing display", flush=True)
-                        device_hide()
+                        gone = f"{time.time() - last:.0f}s" if last else "ever"
+                        print(f"hub claims to be showing but the card has not "
+                              f"polled in {gone} -> re-casting", flush=True)
+                        cast_card()
+                    elif not playing and dash:
+                        print(f"{backend} idle -> releasing hub", flush=True)
+                        catt("stop")
             last_playing = playing
             tick += 1
         except Exception as e:
@@ -1359,21 +1205,12 @@ SAMPLE_SESSION = """<Video type="movie" title="The Devil Wears Prada 2" year="20
   summary="Miranda returns." contentRating="PG-13" duration="7141120" ratingKey="79372"
   rating="7.7" ratingImage="rottentomatoes://image.rating.ripe"
   audienceRating="8.4" audienceRatingImage="rottentomatoes://image.rating.upright"
-  viewOffset="3600000" viewCount="2"
-  tagline="She's back, and twice as fierce.">
-  <Media videoResolution="1080" videoCodec="h264" audioCodec="eac3">
-    <Part decision="directplay">
-      <Stream streamType="2" selected="1" displayTitle="English (EAC3 5.1)"/>
-      <Stream streamType="3" selected="1" displayTitle="English (SRT)"/>
-    </Part>
-  </Media>
+  viewOffset="3600000">
+  <Media videoResolution="1080" videoCodec="h264" audioCodec="eac3"/>
   <Player state="paused"/></Video>"""
 
 SAMPLE_EXTRAS = {"genres": ["Comedy", "Drama"], "imdb": 7.2, "stinger": ["after"],
-                 "poster": True, "backdrop": True, "logo": True,
-                 "chapters": [0, 300000, 600000],
-                 "cast": [{"name": "Bill Skarsgard", "role": "Eddie", "thumb": True},
-                          {"name": "Anthony Hopkins", "role": "William", "thumb": True}]}
+                 "poster": True, "backdrop": True, "logo": True}
 
 SAMPLE_EMBY_SESSION = {
     "UserName": "Alice",
@@ -1381,45 +1218,83 @@ SAMPLE_EMBY_SESSION = {
         "Name": "The Devil Wears Prada 2", "Type": "Movie",
         "ProductionYear": 2026, "RunTimeTicks": 71411200000,
         "Overview": "Miranda returns.", "OfficialRating": "PG-13",
-        "Taglines": ["She's back, and twice as fierce."],
         "Genres": ["Comedy", "Drama"], "Id": "79372",
-        "ProviderIds": {"Tmdb": "12345", "Imdb": "tt1234567"},
+        "ProviderIds": {"Tmdb": "12345"},
         "CommunityRating": 7.2, "CriticRating": 77,
-        "UserData": {"Played": True, "IsFavorite": True, "PlayCount": 0},
         "MediaStreams": [
-            {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920,
-             "Index": 0, "DisplayTitle": "1080p H264"},
-            {"Type": "Audio", "Codec": "eac3", "Index": 1,
-             "DisplayTitle": "English EAC3 5.1 (Default)"},
-            {"Type": "Subtitle", "Index": 2, "DisplayTitle": "English (SRT)"},
-        ],
-        "Chapters": [
-            {"StartPositionTicks": 0, "Name": "Chapter 1"},
-            {"StartPositionTicks": 3000000000, "Name": "Chapter 2"},
-            {"StartPositionTicks": 6000000000, "Name": "Chapter 3"},
-        ],
-        "People": [
-            {"Name": "Bill Skarsgard", "Role": "Eddie", "Type": "Actor",
-             "Id": "10", "PrimaryImageTag": "aaa"},
-            {"Name": "Anthony Hopkins", "Role": "William", "Type": "Actor",
-             "Id": "11", "PrimaryImageTag": "bbb"},
-            {"Name": "A Director", "Role": "", "Type": "Director", "Id": "12"},
+            {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920},
+            {"Type": "Audio", "Codec": "eac3"},
         ],
     },
-    "PlayState": {"PositionTicks": 36000000000, "IsPaused": True,
-                  "PlayMethod": "DirectStream",
-                  "AudioStreamIndex": 1, "SubtitleStreamIndex": 2},
+    "PlayState": {"PositionTicks": 36000000000, "IsPaused": True},
 }
 SAMPLE_EMBY_EXTRAS = {"stinger": ["after"],
                       "poster": True, "backdrop": True, "logo": True}
 
 
 def selftest():
-    assert BACKEND in ("plex", "emby", "jellyfin")
-    assert get_session is not None  # dispatcher exists and is chosen by BACKEND
+    assert ENV_BACKEND in BACKENDS
+    assert get_session is not None  # dispatcher exists, chosen per poll
     # Jellyfin rides the Emby session path; Plex does not.
     assert uses_emby_backend("emby") and uses_emby_backend("jellyfin")
     assert not uses_emby_backend("plex")
+    # the settings dropdown overrides the env default; junk falls back
+    assert media_backend({"mediaBackend": "emby"}) == "emby"
+    assert media_backend({"mediaBackend": "JELLYFIN"}) == "jellyfin"
+    assert media_backend({"mediaBackend": ""}) == ENV_BACKEND
+    assert media_backend({"mediaBackend": "bogus"}) == ENV_BACKEND
+    assert media_backend({}) == ENV_BACKEND
+
+    # keys/tokens are write-only: /settings.json swaps each for a boolean hint
+    served = served_settings({**DEFAULT_SETTINGS, "plexToken": "tok-secret",
+                              "embyKey": "key-secret", "jellyfinKey": ""})
+    for k in SECRET_SETTINGS:
+        assert k not in served, k
+    assert served["plexTokenSet"] is True and served["embyKeySet"] is True
+    assert served["jellyfinKeySet"] is False
+    assert "secret" not in json.dumps(served)
+    assert served["envBackend"] == ENV_BACKEND   # page shows the env default
+
+    # plex creds: settings page wins, env is the fallback
+    _saved_plex = {k: os.environ.get(k) for k in ("PLEX_HOST", "PLEX_TOKEN")}
+    try:
+        os.environ.update(PLEX_HOST="http://p:32400", PLEX_TOKEN="pt")
+        # module-level PLEX/TOKEN were read at import; test the settings side
+        assert plex_creds({"plexHost": "http://s:32400/",
+                           "plexToken": "st"}) == ("http://s:32400", "st")
+        assert plex_creds({"plexHost": "", "plexToken": "st"})[1] == "st"
+    finally:
+        for k, v in _saved_plex.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # per-backend creds: settings win; the env pair matching the backend name
+    # wins over the alias pair when both are set
+    blank = {"mediaBackend": "", "embyHost": "", "embyKey": "",
+             "jellyfinHost": "", "jellyfinKey": ""}
+    assert emby_creds("emby", {**blank, "embyHost": "http://s:1/",
+                               "embyKey": "sk"}) == ("http://s:1", "sk")
+    _envkeys = ("EMBY_HOST", "EMBY_API_KEY", "JELLYFIN_HOST", "JELLYFIN_API_KEY")
+    _saved_env = {k: os.environ.get(k) for k in _envkeys}
+    try:
+        os.environ.update(EMBY_HOST="http://e:1", EMBY_API_KEY="ek",
+                          JELLYFIN_HOST="http://j:2", JELLYFIN_API_KEY="jk")
+        assert emby_creds("emby", blank) == ("http://e:1", "ek")
+        assert emby_creds("jellyfin", blank) == ("http://j:2", "jk")
+        os.environ["JELLYFIN_HOST"] = ""      # alias fallback when its own
+        os.environ["JELLYFIN_API_KEY"] = ""   # pair is absent
+        assert emby_creds("jellyfin", blank) == ("http://e:1", "ek")
+        # settings beat env
+        assert emby_creds("emby", {**blank, "embyHost": "http://s:1",
+                                   "embyKey": "sk"}) == ("http://s:1", "sk")
+    finally:
+        for k, v in _saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     info = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
     assert info["title"] == "The Devil Wears Prada 2"
     assert info["key"] == "79372"
@@ -1428,14 +1303,6 @@ def selftest():
     assert info["scores"] == {"rtCritic": 77, "rtCriticFresh": True,
                               "rtAudience": 84, "rtAudienceFresh": True, "imdb": 7.2}
     assert info["genres"] == ["Comedy", "Drama"]
-    assert info["playMethod"] == "directplay"
-    assert info["audioTrack"] == "English (EAC3 5.1)"
-    assert info["subtitleTrack"] == "English (SRT)"
-    assert info["chapters"] == [0, 300000, 600000]
-    assert info["tagline"] == "She's back, and twice as fierce."
-    assert info["watched"] is True
-    assert "favorite" not in info   # Plex has no favorite concept
-    assert [c["name"] for c in info["cast"]] == ["Bill Skarsgard", "Anthony Hopkins"]
     assert info["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
     assert info["state"] == "paused"
     assert info["stinger"] == ["after"]
@@ -1452,20 +1319,28 @@ def selftest():
     assert "bogus" not in DEFAULT_SETTINGS and merged["posterSide"] == "left" \
         and merged["showPlot"] is False and merged["showClock"] is True \
         and merged["template"] == "spotlight"
-    layout = clean_block_layout({"identity": {"x": 12.345, "y": -200, "width": 140,
-                                              "scale": 9, "height": 50,
-                                              "align": "center", "font": "bebas"},
-                                 "plot": {"align": "diagonal", "font": "comic-sans"},
-                                 "unknown": {"x": 1}})
-    assert layout == {"identity": {"x": 12.35, "y": -100, "width": 100,
-                                   "scale": 3, "align": "center", "font": "bebas"}}
-    # Every block the card page can position must be registered here, or
-    # clean_block_layout() silently discards the user's drag on save.
-    for block in ("tagline", "badges", "tracks", "cast"):
-        assert block in EDITABLE_BLOCKS, block
-    kept = clean_block_layout({"cast": {"x": 4}, "tagline": {"y": -2},
-                               "nosuchblock": {"x": 1}})
-    assert kept == {"cast": {"x": 4}, "tagline": {"y": -2}}
+    layout = clean_block_layout({"spotlight": {
+        "identity": {"x": 12.345, "y": -200, "width": 140,
+                     "scale": 9, "height": 50, "align": "center", "font": "bebas"},
+        "plot": {"align": "diagonal", "font": "comic-sans"},
+        "unknown": {"x": 1}}, "not-a-template": {"identity": {"x": 1}}})
+    assert layout == {"spotlight": {"identity": {"x": 12.35, "y": -100, "width": 100,
+                                                 "scale": 3, "align": "center", "font": "bebas"}}}
+    # Old flat saves (pre-per-template) get nested under the template that
+    # was active when they were written, not silently dropped or reapplied
+    # to every template.
+    assert migrate_block_layout({"identity": {"x": 5}}, "hero") == {
+        "hero": {"identity": {"x": 5}}}
+    assert migrate_block_layout({"spotlight": {"identity": {"x": 5}}}, "hero") == {
+        "spotlight": {"identity": {"x": 5}}}  # already nested: left alone
+    assert migrate_block_layout({}, "hero") == {}
+    vis = clean_block_visibility({"street": {"plot": False, "weather": True,
+                                            "stinger": True, "bogus": 1},
+                                  "not-a-template": {"plot": False}})
+    assert vis == {"street": {"plot": False, "weather": True}}
+    assert visible_blocks("hero", {}) == {"clock", "identity", "meta", "ratings", "progress"}
+    assert visible_blocks("hero", {"hero": {"plot": True, "clock": False}}) == \
+        {"identity", "meta", "ratings", "progress", "plot"}
     assert ACCENT_RE.match("#A1b2C3") and not ACCENT_RE.match("red") \
         and not ACCENT_RE.match("#12345")
     v = ET.fromstring(SAMPLE_SESSION)
@@ -1498,378 +1373,69 @@ def selftest():
     assert filter_set("", "") == set()                    # nobody filtered
     assert "jamison" not in filter_set("alice", "jamison")  # env is replaced
 
+    # Do-not-cast words match genres AND tags, case-insensitive, substring —
+    # "adult" must block "Adult Animation"; an empty list blocks nothing.
+    assert content_blocked({"adult"}, ["Adult Animation"])
+    assert content_blocked({"xxx"}, ["Comedy", "XXX"])
+    assert content_blocked({"18+"}, ["Drama", "18+"])
+    assert content_blocked({"adult", "xxx"}, ["Documentary", "ADULT"])
+    assert not content_blocked(set(), ["Adult", "XXX"])     # feature off
+    assert not content_blocked({"adult"}, ["Comedy", "Drama"])
+    assert not content_blocked({"adult"}, [])
+    assert not content_blocked({"adult"}, ["", None])       # junk terms
+    # short words (< 3 chars) must equal the whole term: blocking the "R"
+    # rating must not block every genre containing the letter r
+    assert content_blocked({"r"}, ["R"])
+    assert not content_blocked({"r"}, ["Horror", "Drama", "Adventure"])
+    assert content_blocked({"x"}, ["X"])
+    assert not content_blocked({"x"}, ["XXX"])              # different rating
+    assert content_blocked({"tv-ma"}, ["TV-MA"])
+    assert content_blocked({"nc-17"}, ["NC-17"])
+    assert filter_set("family", "adult") == {"family"}      # same override rule
+    assert filter_set("", "adult, xxx") == {"adult", "xxx"}
+    bv = ET.fromstring('<Video type="movie" title="X" contentRating="NC-17">'
+                       '<Genre tag="Adult Animation"/><Label tag="Kids OK"/>'
+                       '</Video>')
+    assert plex_item_terms(bv) == ["Adult Animation", "Kids OK", "NC-17"]
+    assert content_blocked(csv_set("adult"), plex_item_terms(bv))
+    assert content_blocked(csv_set("nc-17"), plex_item_terms(bv))   # by rating
+    assert not content_blocked(csv_set("horror"), plex_item_terms(bv))
+    bi = {"Genres": ["Comedy"], "TagItems": [{"Name": "18A"}],
+          "Tags": ["late-night"], "OfficialRating": "TV-MA"}
+    assert emby_item_terms(bi) == ["Comedy", "18A", "late-night", "TV-MA"]
+    assert content_blocked(csv_set("18a"), emby_item_terms(bi))
+    assert content_blocked(csv_set("tv-ma"), emby_item_terms(bi))   # by rating
+    assert content_blocked(csv_set("late"), emby_item_terms(bi))
+    assert not content_blocked(csv_set("xxx"), emby_item_terms(bi))
+    assert emby_item_terms({}) == [""]                      # rating slot only
+
     # The env hints the settings page may see are an allowlist. Nothing that
     # looks like a credential may ever join them.
     hints = env_defaults()
     assert set(hints) == set(ENV_HINT_KEYS), set(hints)
-    for secret in ("PLEX_TOKEN", "EMBY_API_KEY", "TMDB_API_KEY", "token", "key"):
+    for secret in ("PLEX_TOKEN", "TMDB_API_KEY", "token", "key"):
         assert not any(secret.lower() in k.lower() for k in hints), secret
     assert all(isinstance(v, str) for v in hints.values())
 
     # dashcast_active() only proves the DashCast *app* is loaded, not that our
     # card is drawing. A Hub whose page died keeps reporting DashCast forever,
-    # so the loop never re-casts and the screen stays blank. The card polls
+    # so the loop never re-casts and the screen stays blank. The card fetches
     # /now-playing.json every POLL seconds; silence means it is gone.
     assert card_alive(100.0, 99.0, 45)
     assert card_alive(100.0, 56.0, 45)          # just inside the window
     assert not card_alive(100.0, 54.0, 45)      # just outside
     assert not card_alive(100.0, 0.0, 45)       # never polled at all
-    # ...and "never polled" stays dead even when the clock is younger than the
+    # "never polled" stays dead even when the clock is younger than the
     # timeout, which a bare subtraction would misread as alive.
     assert not card_alive(10.0, 0.0, 45)
 
-    # The startup grace window suppresses the re-cast, but it must never make a
-    # card that has not polled *look* alive -- that hid a dead page on a Hub.
-    assert card_ok(100.0, 0.0, grace_until=140.0, timeout=45)   # silent, in grace
-    assert not card_alive(100.0, 0.0, 45)                       # ...but not alive
+    # A freshly cast page is allowed to be silent for one window, but that must
+    # never make a card which has not polled *look* alive on /healthz.
+    assert card_ok(100.0, 0.0, grace_until=140.0, timeout=45)    # silent, in grace
+    assert not card_alive(100.0, 0.0, 45)                        # ...but not alive
     assert not card_ok(100.0, 0.0, grace_until=0.0, timeout=45)  # grace expired
-    assert card_ok(100.0, 99.0, grace_until=0.0, timeout=45)    # polling, no grace
-    # a real poll keeps it ok long after grace has gone
-    assert card_ok(1000.0, 999.0, grace_until=1.0, timeout=45)
-
-    einfo = parse_emby_session(SAMPLE_EMBY_SESSION, extras=lambda item: SAMPLE_EMBY_EXTRAS)
-    assert einfo["type"] == "movie"
-    assert einfo["title"] == "The Devil Wears Prada 2"
-    assert einfo["year"] == 2026
-    assert einfo["state"] == "paused"
-    assert einfo["runtime"] == "1h 59m"
-    assert einfo["media"] == "1080p · H264 · EAC3"
-    assert einfo["playMethod"] == "directstream"
-    assert einfo["audioTrack"] == "English EAC3 5.1 (Default)"
-    assert einfo["subtitleTrack"] == "English (SRT)"
-    assert einfo["chapters"] == [0, 300000, 600000]
-    assert einfo["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
-    assert einfo["genres"] == ["Comedy", "Drama"]
-    assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
-    assert einfo["stinger"] == ["after"]
-    assert einfo["poster"] and einfo["backdrop"] and einfo["logo"]
-    assert einfo["tagline"] == "She's back, and twice as fierce."
-    assert einfo["watched"] is True and einfo["favorite"] is True
-    assert [c["name"] for c in einfo["cast"]] == ["Bill Skarsgard", "Anthony Hopkins"]
-    assert einfo["cast"][0]["role"] == "Eddie"
-    # the full enriched contract the card page and /api consumers rely on
-    contract_keys = {"playing", "type", "key", "title", "year", "state",
-                     "progress", "runtime", "summary", "contentRating", "genres",
-                     "media", "scores", "poster", "backdrop", "logo",
-                     "tagline", "playMethod", "audioTrack", "subtitleTrack",
-                     "chapters", "watched", "favorite", "cast"}
-    assert contract_keys.issubset(einfo), contract_keys - set(einfo)
-    # Plex emits the same contract minus favorite (no such concept in Plex)
-    minfo = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
-    assert (contract_keys - {"favorite"}).issubset(minfo), \
-        (contract_keys - {"favorite"}) - set(minfo)
-    # episode shape
-    eep = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
-    eep["NowPlayingItem"].update(Type="Episode", SeriesName="Severance",
-                                 ParentIndexNumber=2, IndexNumber=5, Name="The Rundown")
-    einfo = parse_emby_session(eep, extras=lambda item: dict(SAMPLE_EMBY_EXTRAS, stinger=[]))
-    assert einfo["title"] == "Severance"
-    assert einfo["subtitle"] == "S2 · E5 · The Rundown"
-    # resolution is labeled by Width, not Height (scope/letterboxed films)
-    assert emby_resolution(1920, 1080) == "1080p"
-    assert emby_resolution(1920, 696) == "1080p"   # 2.76:1 scope film
-    assert emby_resolution(3840, 1600) == "4K"     # 2.40:1 UHD
-    assert emby_resolution(1280, 720) == "720p"
-    assert emby_resolution(None, 1080) == "1080p"  # width missing -> height fallback
-    assert emby_resolution(None, None) is None
-    scope = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
-    scope["NowPlayingItem"]["MediaStreams"] = [
-        {"Type": "Video", "Codec": "h264", "Height": 696, "Width": 1920},
-        {"Type": "Audio", "Codec": "aac"}]
-    sinfo = parse_emby_session(scope, extras=lambda item: SAMPLE_EMBY_EXTRAS)
-    assert sinfo["media"] == "1080p · H264 · AAC"
-    assert emby_image_url("http://emby:8096", "KEY", "79372", "Primary") == (
-        "http://emby:8096/Items/79372/Images/Primary"
-        "?maxWidth=600&maxHeight=900&api_key=KEY")
-    assert emby_image_url("http://emby:8096/", "KEY", "79372", "Backdrop/0",
-                          600, 400) == (
-        "http://emby:8096/Items/79372/Images/Backdrop/0"
-        "?maxWidth=600&maxHeight=400&api_key=KEY")
-    sessions = [
-        {"UserName": "Bob"},  # no NowPlayingItem -> skipped
-        {"UserName": "Alice", "NowPlayingItem": {"Type": "Photo"}},  # wrong type
-        {"UserName": "Alice", "NowPlayingItem": {"Type": "Movie", "Id": "9"},
-         "PlayState": {}},
-    ]
-    assert emby_select_session(sessions, set()) is sessions[2]
-    assert emby_select_session(sessions, {"alice"}) is sessions[2]
-    assert emby_select_session(sessions, {"bob"}) is None
-
-    # device filters, matching the Plex path (v1.4.0 shipped them Plex-only)
-    esessions = [
-        {"UserName": "Alice", "DeviceName": "Chrome", "Client": "Emby Web",
-         "NowPlayingItem": {"Type": "Movie", "Id": "1"}, "PlayState": {}},
-        {"UserName": "Alice", "DeviceName": "Living Room TV",
-         "Client": "Emby Theater",
-         "NowPlayingItem": {"Type": "Movie", "Id": "2"}, "PlayState": {}},
-    ]
-    def pick(u, d):
-        got = emby_select_session(esessions, u, d)
-        return got and got["NowPlayingItem"]["Id"]
-    assert pick(set(), set()) == "1"          # no filters -> first playable
-    assert pick(set(), {"living room tv"}) == "2"   # by DeviceName
-    assert pick(set(), {"emby theater"}) == "2"     # or by Client
-    assert pick({"alice"}, {"chrome"}) == "1"       # user AND device must pass
-    assert pick({"bob"}, {"chrome"}) is None
-    assert pick(set(), {"nope"}) is None
-
-    # Emby rotates too: /Sessions is ordered by activity, so without a sort the
-    # card flips between two people's titles on an arbitrary poll.
-    def emby_two(order):
-        return [
-            {"UserName": "Bob", "DeviceName": "Apple TV", "UserId": "b",
-             "NowPlayingItem": {"Type": "Movie", "Id": "1", "Name": "Jaws"},
-             "PlayState": {}},
-            {"UserName": "alice", "DeviceName": "Pixel 9", "UserId": "a",
-             "NowPlayingItem": {"Type": "Movie", "Id": "2", "Name": "Alien"},
-             "PlayState": {}},
-        ][::order]
-
-    real_fetch, real_load, real_enrich = emby_fetch_json, load_settings, emby_enrich
-    real_parse, real_time = parse_emby_session, time.time
-    try:
-        globals()["emby_enrich"] = lambda item, user_id=None: item
-        globals()["parse_emby_session"] = lambda s, extras=None: {
-            "title": (s.get("NowPlayingItem") or {}).get("Name")}
-        globals()["load_settings"] = lambda profile=None: {
-            "plexUsers": "", "plexDevices": "", "rotateSeconds": 30}
-        picks = {}
-        for label, order in (("normal", 1), ("flipped", -1)):
-            globals()["emby_fetch_json"] = lambda _p, _o=order: emby_two(_o)
-            for bucket, when in (("t0", 0.0), ("t1", 30.0)):
-                globals()["time"].time = lambda _w=when: _w
-                picks[(label, bucket)] = emby_current_session()["title"]
-        # server order must not change the choice, and the clock must
-        for bucket in ("t0", "t1"):
-            assert picks[("normal", bucket)] == picks[("flipped", bucket)], picks
-        assert picks[("normal", "t0")] == "Alien"      # alice sorts before Bob
-        assert picks[("normal", "t1")] == "Jaws"
-        assert len(LAST_SESSIONS) == 2                 # both still reported
-    finally:
-        globals()["time"].time = real_time
-        globals()["emby_fetch_json"] = real_fetch
-        globals()["load_settings"] = real_load
-        globals()["emby_enrich"] = real_enrich
-        globals()["parse_emby_session"] = real_parse
-
-    # the settings page reads device names off LAST_SESSIONS, so Emby must
-    # report them the way Plex does: DeviceName, falling back to Client
-    assert emby_session_names(esessions[1]) == ("Alice", "Living Room TV")
-    assert emby_session_names({"UserName": "Al", "Client": "Emby Web"}) == \
-        ("Al", "Emby Web")
-    assert emby_session_names({}) == ("", "")
-    captured = {}
-    def fake_fetch(path):
-        captured["path"] = path
-        return {"Items": [{
-            "Genres": ["Horror"], "MediaStreams": [{"Type": "Video"}],
-            "People": [{"Name": "Bill Skarsgard", "Role": "Eddie",
-                        "Type": "Actor", "Id": "1", "PrimaryImageTag": "abc"}],
-            "UserData": {"Played": True, "IsFavorite": True, "PlayCount": 0}}]}
-    _orig_fetch = globals()["emby_fetch_json"]
-    globals()["emby_fetch_json"] = fake_fetch
-    try:
-        _emby_enrich_cache.clear()
-        it = {"Id": "999"}
-        emby_enrich(it, user_id="u1")
-        assert it["People"][0]["Name"] == "Bill Skarsgard"
-        assert it["UserData"]["Played"] is True
-        assert "UserId=u1" in captured["path"]
-        assert "People" in captured["path"] and "UserData" in captured["path"]
-        # a truthy-but-partial dict from /Sessions must still gain missing keys,
-        # and values already on the session must win over the fetched ones
-        _emby_enrich_cache.clear()
-        partial = {"Id": "998", "UserData": {"PlaybackPositionTicks": 42,
-                                             "IsFavorite": False}}
-        emby_enrich(partial, user_id="u1")
-        assert partial["UserData"]["Played"] is True        # merged in
-        assert partial["UserData"]["PlaybackPositionTicks"] == 42  # session kept
-        assert partial["UserData"]["IsFavorite"] is False   # session wins
-    finally:
-        globals()["emby_fetch_json"] = _orig_fetch
-        _emby_enrich_cache.clear()
-    saved = []
-    _orig_save = globals()["emby_save_image"]
-    globals()["emby_save_image"] = lambda item_id, kind, out, w, h: saved.append((item_id, kind, out))
-    try:
-        # index space is shared with the contract cast list: unnamed people are
-        # filtered out of both, so cast[i] always matches cast/{i}.jpg
-        emby_download_cast([
-            {"Name": "Bill Skarsgard", "Id": "10", "PrimaryImageTag": "aaa", "Type": "Actor"},
-            {"Name": "No Photo", "Id": "13", "Type": "Actor"},
-            {"Name": "A Director", "Id": "14", "PrimaryImageTag": "ccc", "Type": "Director"}])
-        assert ("10", "Primary", "cast/0.jpg") in saved
-        assert not any(t[0] == "13" for t in saved)   # skipped: no image tag
-        assert not any(t[0] == "14" for t in saved)   # skipped: not an actor
-    finally:
-        globals()["emby_save_image"] = _orig_save
-    # Panel-sized variants must be requested alongside the full-size art so the
-    # ESP panel can fetch small, fast-decoding images (see esphome/).
-    saved2 = []
-    _orig_save2 = globals()["emby_save_image"]
-    globals()["emby_save_image"] = lambda item_id, kind, out, w, h: saved2.append((out, w, h))
-    try:
-        emby_download_art({"Id": "42", "Type": "Movie", "ImageTags": {"Logo": "x"}})
-        names = [s[0] for s in saved2]
-        assert "backdrop-panel.jpg" in names, names
-        assert "logo-panel.png" in names, names
-        assert ("backdrop-panel.jpg", 480, 270) in saved2, saved2
-        assert ("logo-panel.png", 400, 150) in saved2, saved2
-    finally:
-        globals()["emby_save_image"] = _orig_save2
-    assert [p["Name"] for p in emby_billed_cast(
-        [{"Name": "A", "Type": "Actor"}, {"Type": "Actor"},          # unnamed: dropped
-         {"Name": "B", "Type": "Actor"}, {"Name": "D", "Type": "Director"}])] == ["A", "B"]
-    assert TARGET in ("nest", "esp32")
-    # Nest device functions exist and are the chosen dispatch
-    assert device_available is not None and device_show is not None
-    assert device_hide is not None and device_active is not None
-    assert esp32_endpoint("10.0.0.5", 80, "display") == "http://10.0.0.5:80/display"
-    assert esp32_endpoint("10.0.0.5", 8080, "stop") == "http://10.0.0.5:8080/stop"
-    # The card's JSON url derived from PAGE_URL's origin
-    assert esp32_json_url("http://192.168.1.10:8084/image") == \
-        "http://192.168.1.10:8084/now-playing.json"
-    assert "onesheet" in TEMPLATES
-    assert set(PROFILES) == {"cast", "esp"}
-    assert GLOBAL_KEYS == ("default", "hubIp", "plexUsers", "plexDevices",
-                           "weatherZip", "rotateSeconds")
-    # rotateSeconds is the one global that is not a string
-    assert coerce_global("rotateSeconds", "45") == 45
-    assert coerce_global("rotateSeconds", "junk") == 30
-    assert coerce_global("rotateSeconds", 0) == 0
-    assert coerce_global("hubIp", 12) == ""
-    assert set(DENSITY_PRESETS) == {"full", "compact", "minimal"}
-    assert DENSITY_PRESETS["full"]["showCast"] is True
-    assert DENSITY_PRESETS["compact"]["showCast"] is False
-    assert DENSITY_PRESETS["compact"]["showPlayMethod"] is True
-    assert DENSITY_PRESETS["minimal"]["showPlot"] is False
-    assert profile_defaults("full")["density"] == "full"
-    assert profile_defaults("compact")["showTagline"] is False
-    assert profile_defaults("minimal")["showProgress"] is True   # always-on element
-    assert profile_defaults("full")["orientation"] == "auto"
-
-    # Every flat setting must have a home, or migrating a user's saved file
-    # would silently drop it. An upstream merge that adds a key trips this.
-    homed = set(GLOBAL_KEYS) | set(PROFILE_BASE) | set(DENSITY_PRESETS["full"])
-    assert not set(DEFAULT_SETTINGS) - homed, set(DEFAULT_SETTINGS) - homed
-
-    # legacy flat settings migrate into profiles.cast; globals lift to top level
-    legacy = {"hubIp": "10.0.0.5", "plexUsers": "alice", "plexDevices": "tv",
-              "weatherZip": "90210", "bodyFont": "oswald", "showWeather": True,
-              "template": "street", "theme": "concrete", "showPlot": False,
-              "blockLayout": {"identity": {"x": 5}}}
-    mig = migrate_settings(legacy)
-    assert mig["default"] == "cast"
-    assert mig["hubIp"] == "10.0.0.5" and mig["plexUsers"] == "alice"
-    assert mig["weatherZip"] == "90210"          # one location, every profile
-    assert mig["profiles"]["cast"]["bodyFont"] == "oswald"
-    assert mig["profiles"]["cast"]["showWeather"] is True
-    assert mig["profiles"]["esp"]["showWeather"] is False
-    assert mig["profiles"]["cast"]["template"] == "street"
-    assert mig["profiles"]["cast"]["theme"] == "concrete"
-    assert mig["profiles"]["cast"]["showPlot"] is False
-    assert mig["profiles"]["cast"]["blockLayout"] == {"identity": {"x": 5}}
-    assert mig["profiles"]["cast"]["density"] == "full"
-    # esp is seeded compact + portrait + onesheet, and does NOT inherit cast's theme
-    assert mig["profiles"]["esp"]["density"] == "compact"
-    assert mig["profiles"]["esp"]["orientation"] == "portrait"
-    assert mig["profiles"]["esp"]["template"] == "onesheet"
-    assert mig["profiles"]["esp"]["showCast"] is False
-    # globals do not leak into profiles
-    assert "hubIp" not in mig["profiles"]["cast"]
-    # migrating an already-migrated dict is a no-op
-    assert migrate_settings(mig) == mig
-    # junk in, defaults out
-    assert migrate_settings({})["profiles"]["cast"]["template"] == "spotlight"
-    assert migrate_settings("not a dict")["default"] == "cast"
-
-    # resolution merges globals over the chosen profile, flat, as callers expect
-    raw = migrate_settings({"hubIp": "10.0.0.5", "theme": "crimson",
-                            "weatherZip": "90210"})
-    flat = resolve_settings(raw, "cast")
-    assert flat["hubIp"] == "10.0.0.5"          # global
-    assert flat["theme"] == "crimson"           # profile
-    assert flat["density"] == "full"
-    assert "profiles" not in flat and "default" not in flat
-    esp = resolve_settings(raw, "esp")
-    assert esp["template"] == "onesheet" and esp["orientation"] == "portrait"
-    assert esp["hubIp"] == "10.0.0.5"           # globals shared by every profile
-    # weather() reads weatherZip off the flat dict, from whichever profile
-    assert flat["weatherZip"] == esp["weatherZip"] == "90210"
-    # unknown / missing profile falls back to the default profile
-    assert resolve_settings(raw, "bogus") == flat
-    assert resolve_settings(raw, None) == flat
-    # an explicit default is honored
-    picked = migrate_settings({"default": "esp"})
-    assert resolve_settings(picked, None)["template"] == "onesheet"
-
-    # ?profile= picks a profile; anything unknown falls back to the default
-    assert query_profile("/settings.json") is None
-    assert query_profile("/settings.json?profile=esp") == "esp"
-    assert query_profile("/api/settings?profile=cast&x=1") == "cast"
-    assert query_profile("/api/settings?profile=bogus") is None
-    assert query_profile("/api/settings?nope=1") is None
-
-    # /api/settings is CORS-enabled, so it must not leak the globals:
-    # the Hub's IP and the session filters are nobody else's business.
-    pub = public_settings(raw, "esp")
-    assert not set(GLOBAL_KEYS) & set(pub), set(GLOBAL_KEYS) & set(pub)
-    assert pub["template"] == "onesheet"     # a panel still learns its layout
-    assert pub["orientation"] == "portrait"
-    assert pub["showCast"] is False
-
-    # a save splits the settings page's flat body: globals up top, the rest
-    # into the named profile, with every value validated
-    base = migrate_settings({})
-    body = {"hubIp": "10.0.0.9", "plexUsers": "bob", "theme": "bogus",
-            "weatherZip": "  90210-1234567  ", "weatherUnits": "kelvin",
-            "template": "onesheet", "density": "compact", "orientation": "portrait",
-            "posterSide": "sideways", "titleFont": "comic", "bodyFont": "comic",
-            "clockFormat": "25h", "accent": "red", "showCast": False,
-            "showTagline": True, "showWeather": "yes", "clockSeconds": "yes",
-            "blockLayout": {"identity": {"x": 5}, "bad": {}}}
-    updated = save_settings(base, body, "esp")
-    assert updated["hubIp"] == "10.0.0.9" and updated["plexUsers"] == "bob"
-    assert updated["weatherZip"] == "90210-1234"   # trimmed and capped at 10
-    esp = updated["profiles"]["esp"]
-    assert esp["theme"] == "amber"            # invalid -> default
-    assert esp["template"] == "onesheet"      # valid, and newly registered
-    assert esp["density"] == "compact" and esp["orientation"] == "portrait"
-    assert esp["posterSide"] == "right" and esp["titleFont"] == "system"
-    assert esp["bodyFont"] == "system"        # upstream v1.6.0 key, validated
-    assert esp["weatherUnits"] == "f"         # invalid -> default
-    assert esp["clockFormat"] == "12h" and esp["accent"] == ""
-    assert esp["showCast"] is False and esp["showTagline"] is True
-    assert esp["showWeather"] is True         # coerced to bool
-    assert esp["clockSeconds"] is True        # coerced to bool
-    assert esp["blockLayout"] == {"identity": {"x": 5}}   # unknown block dropped
-    # writing esp must not disturb cast
-    assert updated["profiles"]["cast"] == base["profiles"]["cast"]
-    # globals are never stored inside a profile
-    assert not set(GLOBAL_KEYS) & set(esp)
-    # a bad hubIp is rejected rather than stored
-    assert save_settings(base, {"hubIp": "not-an-ip"}, "cast")["hubIp"] == ""
-    # bad density/orientation fall back
-    bad = save_settings(base, {"density": "huge", "orientation": "sideways"}, "cast")
-    assert bad["profiles"]["cast"]["density"] == "full"
-    assert bad["profiles"]["cast"]["orientation"] == "auto"
-    # the card URL names the profile whose settings it should render
-    assert profile_url("http://h:8084/image", "cast") == \
-        "http://h:8084/image?profile=cast"
-    assert profile_url("http://h:8084/image?x=1", "esp") == \
-        "http://h:8084/image?x=1&profile=esp"
-    # an explicit profile already in the URL is respected, not duplicated
-    assert profile_url("http://h:8084/image?profile=esp", "cast") == \
-        "http://h:8084/image?profile=esp"
-    # nest_show appends "&cb=", so a separator must always be present already
-    assert "?" in profile_url("http://h:8084/image", "cast")
-
-    # a save is round-trippable: what you POST is what /settings.json serves
-    assert resolve_settings(updated, "esp")["template"] == "onesheet"
-    assert resolve_settings(updated, "esp")["hubIp"] == "10.0.0.9"
-    # and the whole thing survives another migration untouched
-    assert migrate_settings(updated) == updated
-
+    assert card_ok(100.0, 99.0, grace_until=0.0, timeout=45)     # polling, no grace
+    assert card_ok(1000.0, 999.0, grace_until=1.0, timeout=45)   # poll outlives grace
 
     # Several people can stream at once. /status/sessions has no defined order,
     # so picking "the first allowed session" made the card flip between them on
@@ -1918,7 +1484,9 @@ def selftest():
     try:
         globals()["parse_session"] = lambda v: {"title": v.get("title")}
         globals()["load_settings"] = lambda: {"plexUsers": "", "plexDevices": "",
-                                              "rotateSeconds": 30}
+                                              "rotateSeconds": 30,
+                                              "plexHost": "http://t:1",
+                                              "plexToken": "tk"}
         picks = {}
         for label, xml in (("normal", two), ("flipped", flipped)):
             globals()["fetch_xml"] = lambda _p, _x=xml: ET.fromstring(_x)
@@ -1937,13 +1505,17 @@ def selftest():
 
         # rotateSeconds = 0 pins the first sorted session forever
         globals()["load_settings"] = lambda: {"plexUsers": "", "plexDevices": "",
-                                              "rotateSeconds": 0}
+                                              "rotateSeconds": 0,
+                                              "plexHost": "http://t:1",
+                                              "plexToken": "tk"}
         globals()["time"].time = lambda: 99999.0
         assert current_session()["title"] == "Alien"
 
         # a device filter narrows the candidates; rotation orders what is left
         globals()["load_settings"] = lambda: {"plexUsers": "", "plexDevices": "apple tv",
-                                              "rotateSeconds": 30}
+                                              "rotateSeconds": 30,
+                                              "plexHost": "http://t:1",
+                                              "plexToken": "tk"}
         globals()["time"].time = lambda: 0.0
         assert current_session()["title"] == "Jaws"
     finally:
@@ -1951,6 +1523,206 @@ def selftest():
         globals()["fetch_xml"] = real_fetch
         globals()["parse_session"] = real_parse
         globals()["load_settings"] = real_load
+
+    einfo = parse_emby_session(SAMPLE_EMBY_SESSION, extras=lambda item: SAMPLE_EMBY_EXTRAS)
+    assert einfo["type"] == "movie"
+    assert einfo["title"] == "The Devil Wears Prada 2"
+    assert einfo["key"] == "79372"
+    assert einfo["year"] == 2026
+    assert einfo["state"] == "paused"
+    assert einfo["runtime"] == "1h 59m"
+    assert einfo["media"] == "1080p · H264 · EAC3"
+    assert einfo["progress"] == {"offsetMs": 3600000, "durationMs": 7141120}
+    assert einfo["summary"] == "Miranda returns."
+    assert einfo["contentRating"] == "PG-13"
+    assert einfo["genres"] == ["Comedy", "Drama"]
+    assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
+    assert einfo["stinger"] == ["after"]
+    assert einfo["poster"] and einfo["backdrop"] and einfo["logo"]
+    # Panel-sized variants must be requested alongside the full-size art so the
+    # ESP panel can fetch small, fast-decoding images (see esphome/).
+    _saved_variants = []
+    _orig_save_img = globals()["emby_save_image"]
+    globals()["emby_save_image"] = \
+        lambda item_id, kind, out, w, h: _saved_variants.append((out, w, h))
+    try:
+        emby_download_art({"Id": "42", "Type": "Movie", "ImageTags": {"Logo": "x"}})
+        assert ("backdrop-panel.jpg", 480, 270) in _saved_variants, _saved_variants
+        assert ("logo-panel.png", 400, 150) in _saved_variants, _saved_variants
+    finally:
+        globals()["emby_save_image"] = _orig_save_img
+    # both backends hand the card the same dict: same keys, no extras
+    minfo = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
+    assert set(einfo) == set(minfo), set(einfo) ^ set(minfo)
+    # episode shape
+    eep = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
+    eep["NowPlayingItem"].update(Type="Episode", SeriesName="Severance",
+                                 ParentIndexNumber=2, IndexNumber=5, Name="The Rundown")
+    einfo = parse_emby_session(eep, extras=lambda item: dict(SAMPLE_EMBY_EXTRAS, stinger=[]))
+    assert einfo["title"] == "Severance"
+    assert einfo["subtitle"] == "S2 · E5 · The Rundown"
+    # resolution is labeled by Width, not Height (scope/letterboxed films)
+    assert emby_resolution(1920, 1080) == "1080p"
+    assert emby_resolution(1920, 696) == "1080p"   # 2.76:1 scope film
+    assert emby_resolution(3840, 1600) == "4K"     # 2.40:1 UHD
+    assert emby_resolution(1280, 720) == "720p"
+    assert emby_resolution(None, 1080) == "1080p"  # width missing -> height fallback
+    assert emby_resolution(None, None) is None
+    scope = json.loads(json.dumps(SAMPLE_EMBY_SESSION))
+    scope["NowPlayingItem"]["MediaStreams"] = [
+        {"Type": "Video", "Codec": "h264", "Height": 696, "Width": 1920},
+        {"Type": "Audio", "Codec": "aac"}]
+    sinfo = parse_emby_session(scope, extras=lambda item: SAMPLE_EMBY_EXTRAS)
+    assert sinfo["media"] == "1080p · H264 · AAC"
+    assert emby_image_url("http://emby:8096", "KEY", "79372", "Primary") == (
+        "http://emby:8096/Items/79372/Images/Primary"
+        "?maxWidth=600&maxHeight=900&api_key=KEY")
+    assert emby_image_url("http://emby:8096/", "KEY", "79372", "Backdrop/0",
+                          600, 400) == (
+        "http://emby:8096/Items/79372/Images/Backdrop/0"
+        "?maxWidth=600&maxHeight=400&api_key=KEY")
+    # env aliases: empty-but-present must not shadow a filled fallback
+    os.environ["MARQUEE_TEST_PRIMARY"] = ""
+    os.environ["MARQUEE_TEST_FALLBACK"] = "http://emby:8096"
+    try:
+        assert env_first("MARQUEE_TEST_PRIMARY", "MARQUEE_TEST_FALLBACK") == \
+            "http://emby:8096"
+        os.environ["MARQUEE_TEST_PRIMARY"] = "http://jf:8098"
+        assert env_first("MARQUEE_TEST_PRIMARY", "MARQUEE_TEST_FALLBACK") == \
+            "http://jf:8098"                       # primary wins when set
+        assert env_first("MARQUEE_TEST_MISSING") == ""   # absent -> ""
+    finally:
+        del os.environ["MARQUEE_TEST_PRIMARY"], os.environ["MARQUEE_TEST_FALLBACK"]
+    sessions = [
+        {"UserName": "Bob"},  # no NowPlayingItem -> skipped
+        {"UserName": "Alice", "NowPlayingItem": {"Type": "Photo"}},  # wrong type
+        {"UserName": "Alice", "NowPlayingItem": {"Type": "Movie", "Id": "9"},
+         "PlayState": {}},
+    ]
+    assert emby_select_session(sessions, set()) is sessions[2]
+    assert emby_select_session(sessions, {"alice"}) is sessions[2]
+    assert emby_select_session(sessions, {"bob"}) is None
+
+    # device filters, matching the Plex path
+    esessions = [
+        {"UserName": "Alice", "DeviceName": "Chrome", "Client": "Emby Web",
+         "NowPlayingItem": {"Type": "Movie", "Id": "1"}, "PlayState": {}},
+        {"UserName": "Alice", "DeviceName": "Living Room TV",
+         "Client": "Emby Theater",
+         "NowPlayingItem": {"Type": "Movie", "Id": "2"}, "PlayState": {}},
+    ]
+    def pick(u, d):
+        got = emby_select_session(esessions, u, d)
+        return got and got["NowPlayingItem"]["Id"]
+    assert pick(set(), set()) == "1"          # no filters -> first playable
+    assert pick(set(), {"living room tv"}) == "2"   # by DeviceName
+    assert pick(set(), {"emby theater"}) == "2"     # or by Client
+    assert pick({"alice"}, {"chrome"}) == "1"       # user AND device must pass
+    assert pick({"bob"}, {"chrome"}) is None
+    assert pick(set(), {"nope"}) is None
+
+    # the settings page reads device names off LAST_SESSIONS, so Emby must
+    # report them the way Plex does: DeviceName, falling back to Client
+    assert emby_session_names(esessions[1]) == ("Alice", "Living Room TV")
+    assert emby_session_names({"UserName": "Al", "Client": "Emby Web"}) == \
+        ("Al", "Emby Web")
+    assert emby_session_names({}) == ("", "")
+
+    # Emby rotates too: /Sessions is ordered by activity, so without a sort the
+    # card flips between two people's titles on an arbitrary poll.
+    def emby_two(order):
+        return [
+            {"UserName": "Bob", "DeviceName": "Apple TV",
+             "NowPlayingItem": {"Type": "Movie", "Id": "1", "Name": "Jaws"},
+             "PlayState": {}},
+            {"UserName": "alice", "DeviceName": "Pixel 9",
+             "NowPlayingItem": {"Type": "Movie", "Id": "2", "Name": "Alien"},
+             "PlayState": {}},
+        ][::order]
+
+    real_efetch, real_eload, real_enrich = emby_fetch_json, load_settings, emby_enrich
+    real_eparse, real_etime = parse_emby_session, time.time
+    try:
+        globals()["emby_enrich"] = lambda item: item
+        globals()["parse_emby_session"] = lambda s, extras=None: {
+            "title": (s.get("NowPlayingItem") or {}).get("Name")}
+        globals()["load_settings"] = lambda: {
+            "plexUsers": "", "plexDevices": "", "rotateSeconds": 30,
+            "embyHost": "http://test:1", "embyKey": "k"}
+        picks = {}
+        for label, order in (("normal", 1), ("flipped", -1)):
+            globals()["emby_fetch_json"] = lambda _p, _o=order: emby_two(_o)
+            for bucket, when in (("t0", 0.0), ("t1", 30.0)):
+                globals()["time"].time = lambda _w=when: _w
+                picks[(label, bucket)] = emby_current_session()["title"]
+        # server order must not change the choice, and the clock must
+        for bucket in ("t0", "t1"):
+            assert picks[("normal", bucket)] == picks[("flipped", bucket)], picks
+        assert picks[("normal", "t0")] == "Alien"      # alice sorts before Bob
+        assert picks[("normal", "t1")] == "Jaws"
+        assert len(LAST_SESSIONS) == 2                 # both still reported
+    finally:
+        globals()["time"].time = real_etime
+        globals()["emby_fetch_json"] = real_efetch
+        globals()["load_settings"] = real_eload
+        globals()["emby_enrich"] = real_enrich
+        globals()["parse_emby_session"] = real_eparse
+
+    # The Emby path honors filter_set the same way Plex does: a settings-page
+    # user list REPLACES the env var, it does not union with it. With
+    # PLEX_USERS=bob in the container and "alice" typed on the page, only
+    # alice's session may cast — a union would wrongly let Bob through too.
+    real_users, real_env_users = USERS, ENV_USERS
+    try:
+        globals()["USERS"], globals()["ENV_USERS"] = {"bob"}, "bob"
+        globals()["emby_enrich"] = lambda item: item
+        globals()["parse_emby_session"] = lambda s, extras=None: {
+            "title": (s.get("NowPlayingItem") or {}).get("Name")}
+        globals()["emby_fetch_json"] = lambda _p: emby_two(1)
+        globals()["load_settings"] = lambda: {
+            "plexUsers": "alice", "plexDevices": "", "rotateSeconds": 0,
+            "embyHost": "http://test:1", "embyKey": "k"}
+        globals()["time"].time = lambda: 0.0
+        assert emby_current_session()["title"] == "Alien"   # bob is not unioned in
+        allowed = {row["user"]: row["allowed"] for row in LAST_SESSIONS}
+        assert allowed == {"alice": True, "Bob": False}, allowed
+    finally:
+        globals()["USERS"], globals()["ENV_USERS"] = real_users, real_env_users
+        globals()["time"].time = real_etime
+        globals()["emby_fetch_json"] = real_efetch
+        globals()["load_settings"] = real_eload
+        globals()["emby_enrich"] = real_enrich
+        globals()["parse_emby_session"] = real_eparse
+
+    # enrich: /Sessions omits fields /Items has; fetched once, session wins
+    captured = {}
+    def fake_fetch(path):
+        captured["path"] = path
+        return {"Items": [{
+            "Genres": ["Horror"],
+            "MediaStreams": [{"Type": "Video", "Codec": "h264", "Width": 1920}],
+            "ProviderIds": {"Tmdb": "123", "Imdb": "tt-full"}}]}
+    _orig_fetch = globals()["emby_fetch_json"]
+    globals()["emby_fetch_json"] = fake_fetch
+    try:
+        _emby_enrich_cache.clear()
+        it = {"Id": "999"}
+        emby_enrich(it)
+        assert it["Genres"] == ["Horror"]
+        assert "Genres" in captured["path"] and "MediaStreams" in captured["path"]
+        # a truthy-but-partial dict from /Sessions must still gain missing keys,
+        # and values already on the session must win over the fetched ones
+        _emby_enrich_cache.clear()
+        partial = {"Id": "998", "ProviderIds": {"Imdb": "tt-session"}}
+        emby_enrich(partial)
+        assert partial["ProviderIds"]["Tmdb"] == "123"          # merged in
+        assert partial["ProviderIds"]["Imdb"] == "tt-session"   # session wins
+    finally:
+        globals()["emby_fetch_json"] = _orig_fetch
+        _emby_enrich_cache.clear()
+    # weather intensity clamps to 1..4 with a sane default
+    assert clean_intensity(3) == 3 and clean_intensity(0) == 1
+    assert clean_intensity(9) == 4 and clean_intensity("x") == 2
     print("selftest ok")
 
 

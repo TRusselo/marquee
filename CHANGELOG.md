@@ -1,5 +1,204 @@
 # Changelog
 
+## 1.11.2 — 2026-07-22
+
+- The card now accepts a `?tpl=<template>` query param to preview any
+  template without changing saved settings — so a demo link like
+  `/image?demo=1&tpl=street&wx=rain&day=0` always shows the Street scene and
+  weather regardless of which template is saved. View it on a wide/landscape
+  screen; the card is designed for the Hub's 16:9 display.
+
+## 1.11.1 — 2026-07-22
+
+- Fixed the now-playing card requesting a missing `/favicon.ico` (a harmless
+  404 and console error). The card now carries the same tab icon as the
+  settings page.
+
+## 1.11.0 — 2026-07-22
+
+### Street weather, rebuilt for real
+
+The live weather on the Street scene got a full realism pass, built around
+techniques from four community CodePens (credited in `CREDITS.md`):
+
+- **Rain and snow now draw on a `<canvas>`** — real particles, not CSS
+  tiles. Rain streaks vary in length with fall speed and kick up splash
+  droplets when they land, coloured near‑white rather than blue. Snow is
+  150 flakes with random size, speed, and wind drift — no repeating grid.
+- **Fog** is three soft layers drifting at different speeds with
+  independently pulsing opacity under a blur — a real rolling haze instead
+  of a flat wash.
+- **Overcast** casts a slow drifting cloud shadow instead of flat dimming.
+- **Thunderstorms** (`?wx=storm`) are their own condition with denser rain
+  and stronger dimming.
+- **The "NOW PLAYING" sign glows like neon** with an irregular flicker,
+  theme‑tinted, resting in daylight.
+
+The canvas only runs while rain/snow/storm is active and stops otherwise,
+so it costs nothing on a clear day.
+
+**Weather effects are now their own setting** — **Weather effects** under
+Card content, separate from the **Weather** text chip. You can have the
+temperature readout without the scene effects, or the effects without the
+readout; neither is tied to the other. On by default so Street keeps its
+signature look.
+
+**Effect intensity (1–4)** — a new dropdown under Card content scales how
+strong the weather looks: particle count, particle opacity, and fog/cloud
+density. Defaults to **2 (Light)**, which stays easy to ignore if the
+screen sits in the corner of your eye while you watch something.
+
+Test any condition live with `?wx=rain|snow|fog|cloud|storm`, `?day=1|0`,
+and `?wxi=1..4` on `/image`.
+
+## 1.10.0 — 2026-07-21
+
+### Mix and match any block, on any template
+
+The block editor's "Selected block" dropdown now only ever lists what's
+actually on the current template. A new **Add a block** control sits next
+to it: pick a name and it's placed on the template immediately (auto-slotted
+onto an open spot, ready to drag), then resets itself so it's always ready
+for the next one. A **Remove block** button drops the selected block back
+off. Every template ships with its original block set untouched — this is
+purely additive, so nothing changes until you actually add or remove
+something. **Reset this template** now restores the template's shipped
+block set too, not just positions.
+
+Weather is no longer nested inside the clock block sharing its position —
+it's its own block, sized and placed independently. Adding it also turns
+its data fetch on if it wasn't already (that one setting used to default
+off, unlike everything else you can add).
+
+Every block change is scoped to the template you're looking at: nudging a
+block's position on Spotlight no longer silently nudges it on Street too,
+the way it used to.
+
+### The mobile settings page gets a top strip instead of a wall of cards
+
+On phones, the Template grid and the inline Vibes stepper — two overlapping
+ways to pick mostly the same thing — collapse into one looping, swipeable
+carousel pinned under the header. Swipe through and the preview updates
+live, the same way Vibes always has; tap a card or let it settle and it's
+applied. Frees up most of a screen's worth of vertical space before you
+even reach a real control.
+
+Also on phones: a focused text field elsewhere on the page popping the
+keyboard used to leave the fixed preview sheet pinned across most of the
+little space the keyboard left, crushing whatever you were trying to type
+into down to a sliver. The sheet now gets out of the way while a keyboard's
+up — nothing in it needs one.
+
+### Real weather on the Street scene
+
+Street's brick wall now reacts to actual conditions: rain streaks, drifting
+snow, or overcast dimming, plus true day/night — daylight brightens the
+wall and rests the marquee's bulb-twinkle and sign-chase animations instead
+of running them under a bright sky. Same `/weather` endpoint every template
+already used for the weather chip; Street just also fetches it for itself
+when you haven't turned the chip on. `?wx=rain|snow|fog|cloud` and
+`?day=1|0` force a condition, for testing without waiting for the sky to
+cooperate.
+
+The poster also picked up a theme-colored glow bleeding onto the brick
+behind it, like backlighting through the marquee case — it retints with
+whichever accent color the card is using, the same as the progress bar and
+title glow already do.
+
+## 1.9.0 — 2026-07-20
+
+### A "do not cast" list, so the marquee can't overshare
+
+A new **Do not cast** filter: comma-separated words, checked against every
+session's genres, tags, and content rating. A match means that session is
+never cast — no title, no poster, no card. Set it as `BLOCK_TAGS` in the
+container or type it on the settings page (same default-vs-override rule as
+the other filters, with the env value shown as a greyed placeholder).
+`adult, xxx, 18+, nc-17, tv-ma` is the obvious use, but it's just words —
+block `horror` on the family display if you like.
+
+Matching is deliberately broad: case-insensitive, and words of three or more
+characters match inside terms, so `adult` also blocks an "Adult Animation"
+genre — for an overshare guard, blocking too much beats leaking. Shorter
+words match a term exactly, so blocking the `R` rating doesn't take Horror
+and Drama with it. On Emby/Jellyfin, where `/Sessions`
+sometimes omits the genre list, the picked item is re-checked after its full
+record is fetched: better a blank display than a title the pre-filter
+couldn't see. Blocked sessions still appear in the settings page's Active
+sessions list (marked not allowed), so the admin can see the filter doing
+its job.
+
+### Env vars are defaults you can see, not overrides you can't
+
+`PLEX_USERS` / `PLEX_DEVICES` used to **merge** with the settings page instead
+of being replaced by it. The env list was invisible — the Users field showed
+empty while every other session was silently ignored — and unliftable: the
+page could only add names to what the env var already allowed, so clearing the
+field changed nothing. `HUB_IP` alone behaved correctly.
+
+Now all three follow `HUB_IP`'s rule: a typed value replaces the env var, a
+blank field inherits it. The inherited value is shown as a greyed placeholder —
+`jamison (from PLEX_USERS)` — via a new `/env-defaults` route that serves
+exactly those three values and nothing else, an allowlist so nothing
+credential-shaped can leak to a browser by default. `selftest` pins the
+override semantics (blank inherits, typed replaces, the env is never unioned
+back in) and the allowlist (no token/key-shaped name may ever join the hints).
+
+The Emby/Jellyfin session picker now uses that same `filter_set` resolution —
+previously only the Plex path did, so on an Emby backend the user/device fields
+still merged with the env var (invisible, unliftable) while the docs promised
+they replaced it. Both backends read the same settings fields, so both now
+behave identically; `selftest` drives `emby_current_session()` to prove a typed
+user list excludes an env-allowed user rather than unioning it in.
+
+### Emby and Jellyfin join Plex
+
+Marquee can now watch an Emby or Jellyfin server instead of Plex. Set
+`MEDIA_BACKEND=emby` (with `EMBY_HOST` / `EMBY_API_KEY`) or
+`MEDIA_BACKEND=jellyfin` (with `JELLYFIN_HOST` / `JELLYFIN_API_KEY`); Plex
+stays the default and the Plex path is untouched.
+
+Both backends produce the same now-playing dict, so every template, theme,
+toggle, and the session filters and rotation work identically — the selftest
+asserts the two parsers emit the same keys. Emby's `/Sessions` omits some of
+the fields the card wants (genres, media streams, ratings, overview), so the
+backend fetches them from `/Items` once per title and caches them, exactly as
+the Plex path caches its metadata lookups. Artwork (poster, backdrop, logo)
+comes from the item image endpoints at the same sizes the Plex transcoder
+delivers.
+
+Jellyfin forked from Emby in 2018 and the handful of APIs Marquee uses —
+`api_key` query auth, `/Sessions`, `/Items`, `/Items/{id}/Images/*` — are
+byte-compatible, so Jellyfin rides the Emby code path unchanged. The
+`JELLYFIN_*` env names are aliases for the `EMBY_*` pair, accepted so a
+compose file can say what it means. Verified end to end against live Emby and
+Jellyfin (10.11) servers, through to the card rendering on a real Nest Hub.
+
+### Switch backends from the settings page
+
+A new **Media server** panel picks the backend: one dropdown (Plex / Emby /
+Jellyfin), one server-address field, one key field. The dropdown decides
+which backend the two fields edit; each backend keeps its own stored pair,
+so switching between servers loses nothing. Like every other setting,
+nothing changes until **Save**; the choice is then resolved every poll, so a
+saved change takes effect within ~5 seconds — no container restart. The
+settings page wins and env is the container-level default, exactly the rule
+the cast device field has always followed; with nothing set anywhere, the
+backend is plex, as it has always been.
+
+Keys and tokens are write-only secrets: stored server-side, never served
+back to a browser. `/settings.json` replaces each with a saved/not-saved
+hint, the page shows *saved — blank keeps it*, and Export/Import never
+carries them. Saving a backend that has no server configured anywhere is
+rejected with a clear error rather than stored — a backend that fails
+silently on the next poll would just be a blank display with no explanation.
+
+With that, only `PAGE_URL` is required at startup. A container with no
+media-server credentials at all no longer exits; it warns and serves the
+settings page, where the server address and key finish the job. Every
+credential env var still works exactly as before — it is simply no longer
+the only way in.
+
 ## 1.8.0 — 2026-07-19
 
 ### The block editor grows up
@@ -49,106 +248,6 @@ re-cast. A page cast moments ago gets one window to load before it counts.
 showing a dead page is now visible from outside the container — which matters,
 because per-request logging is suppressed.
 
-### Jellyfin joins Emby
-
-`MEDIA_BACKEND=jellyfin` is now a backend, set `JELLYFIN_HOST` and
-`JELLYFIN_API_KEY` (the `EMBY_*` names also work). Jellyfin forked from Emby in
-2018 and the endpoints Marquee touches — `api_key` query auth, `/Sessions`,
-`/Items?Ids=…&UserId=…&Fields=…`, and the image routes — are still
-byte-for-byte compatible, so Jellyfin rides the existing Emby code path unchanged
-rather than duplicating it. Verified end to end against a live Jellyfin 10.11
-server: session pick, enrichment (People/UserData/Taglines/Chapters),
-poster/backdrop/logo/cast-headshot downloads, and the card rendering on a real
-Google Nest Hub — the same end-to-end bar the Emby backend has already cleared.
-
-### Card enrichment — data layer
-
-`now-playing.json` (and `/api/now-playing.json`) now carry, from **both** the
-Plex and Emby backends: `tagline`, `playMethod` (direct play / direct stream /
-transcode), the `audioTrack` and `subtitleTrack` actually playing, `chapters`
-(ms offsets), `watched`, `favorite` (Emby only — Plex has no such concept), and
-a `cast` list of top-billed actors whose headshots are saved to
-`output/cast/N.jpg`, index-aligned with the list.
-
-Emby pulls `UserData` and `People` from one cached `/Items?Ids=…&UserId=…` call,
-since `/Sessions` never returns them; a truthy-but-partial `UserData` from
-`/Sessions` now merges rather than being skipped. `watched` reads
-`UserData.Played`, not `PlayCount` — a re-watched title reports `Played: true`
-with `PlayCount: 0`. Plex takes `cast`/`chapters` from the existing metadata
-fetch (`includeChapters=1`).
-
-Emby resolution is now labeled by frame **width**, so letterboxed scope films
-(e.g. 1920×696) read as `1080p` instead of `696p`.
-
-The card page does not render these fields yet — that lands with the layout work.
-
-### Settings profiles
-
-Appearance settings are now stored per display profile — `cast` for a Google
-Cast screen, `esp` for an ESP panel — so a small panel can drop the elements a
-Hub has room for. Each profile carries a **density** preset (full / compact /
-minimal) and an **orientation** (auto / landscape / portrait), plus a new
-`onesheet` template for portrait screens. The globals — the Hub's IP, the
-session filters, the weather ZIP — are shared by both.
-
-A display asks for its own settings with `?profile=cast|esp` on
-`/settings.json`, and the settings page POSTs it back to `/save?profile=`,
-which leaves the other profile untouched. **Omitting `?profile=` means the
-default profile, and the served shape is unchanged**, so the card page, the
-settings page, and v1.6.0's export/import all keep working as they were. An
-existing flat `settings.json` folds into the `cast` profile on first read.
-
-New `GET /api/settings?profile=` is CORS-enabled for an ESP/ESPHome panel to
-fetch its own layout. It serves appearance only — the globals stay on
-same-origin `/settings.json`, so no page in your browser can read your Hub's IP
-or session filters.
-
-### Emby session filters
-
-`MEDIA_DEVICES` joins `MEDIA_USERS` (with `PLEX_DEVICES`/`PLEX_USERS` as
-fallbacks), and **both backends now honor both filters** — Emby matches a
-session's `DeviceName` or `Client`. Two Emby-side gaps closed with it: the user
-list typed on the settings page was ignored in favor of the env var, and Emby
-never reported its active sessions, so the settings page's "Active sessions"
-panel was empty. It now lists every playing session, including the ones your
-filters block, so you can copy the exact device names.
-
-### Notes
-
-- Merged upstream v1.6.0 (session filters, Street template, Vibes, weather,
-  card font, export/import, mobile settings).
-
-### Type your display's IP when the scan can't find it
-
-The Cast device field was a dropdown fed only by `catt scan`, which discovers
-devices over **mDNS**. Multicast is the first thing networks drop — a Docker
-bridge network, a VLAN without an mDNS reflector, AP isolation, IGMP snooping
-with no querier — and a display that discovery cannot see is usually still
-perfectly reachable, because `catt` connects straight to TCP port 8009 and never
-uses mDNS to do it. On a LAN with several Nest displays, a scan that returns one
-unrelated TV is a routine outcome, not a broken install.
-
-So the field takes a typed IP now, with the scan results offered as suggestions.
-A non-IP is flagged as you type, and the server validates independently. The
-README explains where discovery fails and how to check an address before saving.
-
-### Env vars are defaults you can see, not overrides you can't
-
-`HUB_IP`, `MEDIA_USERS`, and `MEDIA_DEVICES` all have settings-page fields. Now
-they all follow one rule: **type a value to use it, leave the field empty to
-inherit the container's**. Each env value appears as a greyed placeholder —
-`jamison (from MEDIA_USERS)` — so an empty box reads as *inheriting this*.
-
-Previously the user and device filters **merged** with the env var instead of
-replacing it. `MEDIA_USERS=jamison` in a Compose file left the Users field
-looking empty while every other session was silently ignored, and clearing the
-field changed nothing, because the page could only add names to what the env var
-already allowed. `HUB_IP` alone behaved correctly. Now all three match it.
-
-The new `/env-defaults` route serves those three values and nothing else — an
-allowlist, so a future credential-shaped variable cannot leak into it by
-default.
-
 ### More than one person is watching
 
 When two people stream at once, the card used to flip between their titles at
@@ -165,7 +264,7 @@ Rotation is a pure function of the clock, so nothing needs to be remembered
 across a restart, and two displays watching the same server show the same
 session at the same time. Your user and device filters still decide who is
 eligible — rotation only orders whoever is left, so filtering to yourself with
-two devices rotates rather than flickering. Both backends honor it.
+two devices rotates rather than flickering.
 
 ## 1.6.0 — 2026-07-09
 
