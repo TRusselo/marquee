@@ -491,6 +491,7 @@ def emby_download_art(item):
         if backdrop_id:
             emby_save_image(backdrop_id, "Backdrop/0", "backdrop.jpg", 1280, 800)
             out["backdrop"] = True
+            emby_save_image(backdrop_id, "Backdrop/0", "backdrop-panel.jpg", 480, 270)
     except Exception:
         pass
     logo_id = item.get("ParentLogoItemId") or item.get("SeriesId") or item_id
@@ -498,6 +499,7 @@ def emby_download_art(item):
         if "Logo" in tags or logo_id:
             emby_save_image(logo_id, "Logo", "logo.png", 800, 310)
             out["logo"] = True
+            emby_save_image(logo_id, "Logo", "logo-panel.png", 400, 150)
     except Exception:
         pass
     return out
@@ -1700,6 +1702,20 @@ def selftest():
         assert not any(t[0] == "14" for t in saved)   # skipped: not an actor
     finally:
         globals()["emby_save_image"] = _orig_save
+    # Panel-sized variants must be requested alongside the full-size art so the
+    # ESP panel can fetch small, fast-decoding images (see esphome/).
+    saved2 = []
+    _orig_save2 = globals()["emby_save_image"]
+    globals()["emby_save_image"] = lambda item_id, kind, out, w, h: saved2.append((out, w, h))
+    try:
+        emby_download_art({"Id": "42", "Type": "Movie", "ImageTags": {"Logo": "x"}})
+        names = [s[0] for s in saved2]
+        assert "backdrop-panel.jpg" in names, names
+        assert "logo-panel.png" in names, names
+        assert ("backdrop-panel.jpg", 480, 270) in saved2, saved2
+        assert ("logo-panel.png", 400, 150) in saved2, saved2
+    finally:
+        globals()["emby_save_image"] = _orig_save2
     assert [p["Name"] for p in emby_billed_cast(
         [{"Name": "A", "Type": "Actor"}, {"Type": "Actor"},          # unnamed: dropped
          {"Name": "B", "Type": "Actor"}, {"Name": "D", "Type": "Director"}])] == ["A", "B"]
