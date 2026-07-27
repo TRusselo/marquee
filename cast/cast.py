@@ -532,6 +532,7 @@ def download_art(item, rating_key):
     if item.get("art"):
         transcode_to("backdrop.jpg", item.get("art"), 1280, 800)
         out["backdrop"] = True
+        transcode_to("backdrop-panel.jpg", item.get("art"), 480, 270)
     try:
         with urllib.request.urlopen(
                 plex_url(f"/library/metadata/{rating_key}/clearLogo"), timeout=15) as r:
