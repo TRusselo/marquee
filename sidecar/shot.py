@@ -3,6 +3,11 @@
 
 Pure logic + stdlib only at import time. Playwright is imported lazily inside
 the renderer so `--selftest` runs anywhere with just Python 3.
+
+Cadence: poll now-playing.json fast (POLL_EVERY); re-render only when the state
+meaningfully changes (play/pause/stop/title/seek) so those show quickly, plus a
+slow PROGRESS_EVERY heartbeat for the creeping progress bar. Idle -> one frame,
+then Chromium sleeps.
 """
 import os
 import sys
@@ -20,29 +25,44 @@ def cfg():
         "url": os.environ.get("MARQUEE_URL", "http://127.0.0.1:8084").rstrip("/"),
         "width": int(os.environ.get("PANEL_WIDTH", "800")),
         "height": int(os.environ.get("PANEL_HEIGHT", "480")),
-        "every": float(os.environ.get("CAPTURE_EVERY", "5")),
         "quality": int(os.environ.get("JPEG_QUALITY", "85")),
         "port": int(os.environ.get("SERVE_PORT", "8088")),
         "settle": float(os.environ.get("SETTLE_SECONDS", "0.8")),
+        "poll_every": float(os.environ.get("POLL_EVERY", "1")),        # now-playing check
+        "progress_every": float(os.environ.get("PROGRESS_EVERY", "60")),  # progress heartbeat
+        "seek_ms": int(os.environ.get("SEEK_MS", "5000")),             # jump = seek
     }
 
 
-def is_playing(np):
-    """True when now-playing.json reports playback."""
-    return bool(np.get("playing", False))
+def card_state(np):
+    """Extract the fields that decide when to re-render, from now-playing.json."""
+    prog = np.get("progress") or {}
+    return {
+        "playing": bool(np.get("playing", False)),
+        "state": str(np.get("state", "")),        # e.g. playing/paused (when playing)
+        "title": str(np.get("title", "")),
+        "offset": int(prog.get("offsetMs", 0) or 0),
+    }
 
 
-def decide(playing, idle_captured):
-    """Pure state machine. Returns (action, new_idle_captured).
+def hard_change(prev, cur):
+    """True on play/pause/stop/title change — the events that must show fast."""
+    return (prev["playing"] != cur["playing"]
+            or prev["state"] != cur["state"]
+            or prev["title"] != cur["title"])
 
-    action is one of: 'capture' (playing), 'idle' (just stopped, grab one frame),
-    'sleep' (idle and already captured).
+
+def is_seek(prev, cur, elapsed_s, seek_ms):
+    """True when position jumped more than normal playback would explain.
+
+    Frozen offset (paused/buffering) is NOT a seek, even after a long gap.
     """
-    if playing:
-        return ("capture", False)
-    if not idle_captured:
-        return ("idle", True)
-    return ("sleep", True)
+    if not (prev["playing"] and cur["playing"]):
+        return False
+    if cur["offset"] == prev["offset"]:
+        return False
+    expected = prev["offset"] + int(elapsed_s * 1000)
+    return abs(cur["offset"] - expected) > seek_ms
 
 
 def fetch_json(url, timeout=5):
@@ -109,6 +129,10 @@ class Renderer:
         )
         self._page.goto(self.url, wait_until="networkidle", timeout=30000)
 
+    def reload(self):
+        """Force the card to re-fetch now-playing + re-render (fresh capture)."""
+        self._page.reload(wait_until="networkidle", timeout=30000)
+
     def capture(self):
         return self._page.screenshot(type="jpeg", quality=self.quality)
 
@@ -133,12 +157,22 @@ class Renderer:
 
 def run():
     c = cfg()
-    print(f"marquee-shot: {c['url']}/image -> :{c['port']}/card.jpg "
-          f"@ {c['width']}x{c['height']} every {c['every']}s", flush=True)
+    print(f"marquee-shot: {c['url']}/image -> :{c['port']}/card.jpg @ "
+          f"{c['width']}x{c['height']}  poll {c['poll_every']}s  "
+          f"progress {c['progress_every']}s", flush=True)
     threading.Thread(target=serve, args=(c["port"],), daemon=True).start()
 
     r = Renderer(c["url"], c["width"], c["height"], c["quality"])
     r.start()
+
+    def do_capture():
+        r.reload()
+        time.sleep(c["settle"])
+        publish(r.capture())
+
+    prev = None
+    prev_mono = time.monotonic()
+    last_capture = 0.0
     idle_captured = False
     while True:
         try:
@@ -147,38 +181,71 @@ def run():
                 r.stop()
                 r = Renderer(c["url"], c["width"], c["height"], c["quality"])
                 r.start()
-            playing = is_playing(fetch_json(f"{c['url']}/now-playing.json"))
-            action, idle_captured = decide(playing, idle_captured)
-            if action == "capture":
-                time.sleep(c["settle"])
-                publish(r.capture())
-            elif action == "idle":
-                publish(r.capture())
+                prev = None  # force a fresh capture after relaunch
+
+            cur = card_state(fetch_json(f"{c['url']}/now-playing.json"))
+            now = time.monotonic()
+            elapsed = now - prev_mono
+
+            reason = None
+            if prev is None or hard_change(prev, cur):
+                reason = "state"
+            elif is_seek(prev, cur, elapsed, c["seek_ms"]):
+                reason = "seek"
+            elif cur["playing"] and (now - last_capture) >= c["progress_every"]:
+                reason = "progress"
+            elif (not cur["playing"]) and not idle_captured:
+                reason = "idle"
+
+            if reason:
+                do_capture()
+                last_capture = now
+                idle_captured = not cur["playing"]
+                print(f"captured ({reason})", flush=True)
+            prev, prev_mono = cur, now
         except Exception as e:
             print(f"loop error: {e}", flush=True)
-        time.sleep(c["every"])
+        time.sleep(c["poll_every"])
 
 
 def _selftest():
-    assert is_playing({"playing": True}) is True
-    assert is_playing({"playing": False}) is False
-    assert is_playing({}) is False, "missing key defaults to not playing"
+    # card_state extracts exactly the fields we key on.
+    s = card_state({"playing": True, "state": "playing", "title": "X",
+                    "progress": {"offsetMs": 12000}})
+    assert s == {"playing": True, "state": "playing", "title": "X", "offset": 12000}, s
+    assert card_state({}) == {"playing": False, "state": "", "title": "", "offset": 0}
 
-    assert decide(True, False) == ("capture", False)
-    assert decide(True, True) == ("capture", False), "playing always resets idle flag"
-    assert decide(False, False) == ("idle", True), "first idle tick grabs one frame"
-    assert decide(False, True) == ("sleep", True), "subsequent idle ticks do nothing"
+    # hard_change: play/pause/stop/title flip true; advancing offset does not.
+    base = card_state({"playing": True, "state": "playing", "title": "X",
+                       "progress": {"offsetMs": 1000}})
+    assert hard_change(base, card_state({"playing": True, "state": "paused",
+                       "title": "X", "progress": {"offsetMs": 1000}})) is True
+    assert hard_change(base, card_state({"playing": False})) is True
+    assert hard_change(base, card_state({"playing": True, "state": "playing",
+                       "title": "Y", "progress": {"offsetMs": 1000}})) is True
+    assert hard_change(base, card_state({"playing": True, "state": "playing",
+                       "title": "X", "progress": {"offsetMs": 4000}})) is False, \
+        "advancing offset is not a hard change"
 
-    ic = False
-    _, ic = decide(True, ic);  assert ic is False
-    _, ic = decide(False, ic); assert ic is True
-    _, ic = decide(False, ic); assert ic is True
-    _, ic = decide(True, ic);  assert ic is False
+    # is_seek: normal advance = no; big jump = yes; frozen (paused) = no.
+    p = card_state({"playing": True, "state": "playing", "title": "X",
+                    "progress": {"offsetMs": 10000}})
+    normal = card_state({"playing": True, "state": "playing", "title": "X",
+                         "progress": {"offsetMs": 12000}})
+    assert is_seek(p, normal, 2.0, 5000) is False, "advanced ~2s over 2s"
+    jump = card_state({"playing": True, "state": "playing", "title": "X",
+                       "progress": {"offsetMs": 300000}})
+    assert is_seek(p, jump, 2.0, 5000) is True, "jumped ~5min"
+    frozen = card_state({"playing": True, "state": "playing", "title": "X",
+                         "progress": {"offsetMs": 10000}})
+    assert is_seek(p, frozen, 30.0, 5000) is False, "frozen 30s = paused, not seek"
+    stopped = card_state({"playing": False})
+    assert is_seek(p, stopped, 2.0, 5000) is False, "not-playing is never a seek"
 
     # fetch_json round-trips JSON from a local ephemeral server.
     class _H(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = b'{"playing": true, "title": "Family Guy"}'
+            body = b'{"playing": true, "title": "Family Guy", "progress": {"offsetMs": 42}}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -189,8 +256,8 @@ def _selftest():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     port = srv.server_address[1]
-    got = fetch_json(f"http://127.0.0.1:{port}/now-playing.json")
-    assert is_playing(got) is True and got["title"] == "Family Guy", got
+    got = card_state(fetch_json(f"http://127.0.0.1:{port}/now-playing.json"))
+    assert got["playing"] is True and got["title"] == "Family Guy" and got["offset"] == 42, got
     srv.shutdown()
 
     # File server: 503 before any frame, image/jpeg 200 after publish().

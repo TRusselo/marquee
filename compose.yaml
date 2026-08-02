@@ -40,6 +40,7 @@ services:
       MARQUEE_URL: "http://127.0.0.1:8084"
       PANEL_WIDTH: "800"
       PANEL_HEIGHT: "480"
-      CAPTURE_EVERY: "5"
+      POLL_EVERY: "1"           # how often to check now-playing (fast reaction)
+      PROGRESS_EVERY: "60"      # heartbeat re-render for the progress bar
       JPEG_QUALITY: "85"
       SERVE_PORT: "8088"

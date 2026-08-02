@@ -24,10 +24,16 @@ A plain `docker compose up -d` does **not** build or start it.
 |-----|---------|---------|
 | `MARQUEE_URL` | `http://127.0.0.1:8084` | Marquee base URL |
 | `PANEL_WIDTH` / `PANEL_HEIGHT` | `800` / `480` | render size = your panel's pixels |
-| `CAPTURE_EVERY` | `5` | seconds between captures while playing |
+| `POLL_EVERY` | `1` | seconds between now-playing checks (state-change reaction) |
+| `PROGRESS_EVERY` | `60` | seconds between progress-bar heartbeat re-renders |
+| `SEEK_MS` | `5000` | position jump (ms) treated as a seek → immediate re-render |
 | `JPEG_QUALITY` | `85` | output JPEG quality |
 | `SERVE_PORT` | `8088` | port that serves `/card.jpg` |
-| `SETTLE_SECONDS` | `0.8` | delay before capture so the card reflects new data |
+| `SETTLE_SECONDS` | `0.8` | delay after reload before capture, so the card is fresh |
+
+Re-renders happen on **state change** (play/pause/stop/title/seek) for fast
+reaction, plus a slow `PROGRESS_EVERY` heartbeat while playing. Chromium is idle
+when nothing is playing.
 
 **Other displays:** set `PANEL_WIDTH`/`PANEL_HEIGHT` to your panel's resolution —
 the card is responsive and reflows to it. No code changes.
