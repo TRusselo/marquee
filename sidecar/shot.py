@@ -100,7 +100,8 @@ class Renderer:
         from playwright.sync_api import sync_playwright  # lazy: keeps --selftest dep-free
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
-            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=True, channel="chromium-headless-shell",
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},

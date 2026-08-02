@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpango-1.0-0 libcairo2 \
         fonts-liberation fonts-unifont \
     && pip install --no-cache-dir -r requirements.txt \
-    && python -m playwright install chromium \
+    && python -m playwright install chromium-headless-shell \
     && chmod -R a+rX /ms-playwright \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
