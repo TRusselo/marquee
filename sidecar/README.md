@@ -10,6 +10,12 @@ A warm headless-Chromium page stays open on `${MARQUEE_URL}/image` (the same car
 the Nest Hub loads). On a play-aware loop it screenshots that page to `card.jpg`
 and serves it from a tiny stdlib HTTP server. Marquee itself is untouched.
 
+Endpoints (on `SERVE_PORT`):
+- `GET /card.jpg` — the current 800×480 card image.
+- `GET /state.json` — `{"ver": N, "playing": bool}`. `ver` bumps on every new
+  frame, so a client (the ESP panel) polls this cheaply and only re-downloads
+  `card.jpg` when `ver` changes.
+
 ## Run
 
 Opt-in via the `panel` Compose profile (from the repo root):

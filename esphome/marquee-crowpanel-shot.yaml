@@ -5,10 +5,8 @@
 # Requires the sidecar running:  docker compose --profile panel up -d
 substitutions:
   sidecar_host: "192.168.1.12"     # Unraid host running marquee-shot
-  sidecar_port: "8088"             # marquee-shot SERVE_PORT
-  marquee_host: "192.168.1.12"     # marquee (now-playing.json, for backlight)
-  marquee_port: "8084"
-  poll_every: "5s"
+  sidecar_port: "8088"             # marquee-shot SERVE_PORT (/card.jpg + /state.json)
+  poll_every: "2s"                 # poll the tiny /state.json; card fetched only on a version change
 
 esphome:
   name: marquee-panel
@@ -73,7 +71,9 @@ i2c:
   scan: false
 
 globals:
-  - {id: prev_playing,   type: bool, restore_value: no, initial_value: "false"}
+  - {id: prev_ver,       type: int,  restore_value: no, initial_value: "-1"}
+  - {id: now_playing,    type: bool, restore_value: no, initial_value: "false"}
+  - {id: card_dirty,     type: bool, restore_value: no, initial_value: "false"}
   - {id: redraw_pending, type: bool, restore_value: no, initial_value: "false"}
 
 online_image:
@@ -117,30 +117,32 @@ display:
 interval:
   - interval: ${poll_every}
     then:
-      # 1) refresh the card image every poll (progress advances)
-      - component.update: card_img
-      # 2) redraw once the new frame has decoded
-      - if:
-          condition:
-            lambda: "return id(redraw_pending);"
-          then:
-            - lambda: "id(redraw_pending) = false;"
-            - component.update: panel
-      # 3) backlight: dim during playback (cinema), normal when idle
+      # Poll the sidecar's cheap /state.json; only re-fetch the 64 KB card when
+      # its version bumps (any change: play/pause/seek/title/progress). Also
+      # carries the playing flag for the backlight — no separate now-playing poll.
       - http_request.get:
-          url: "http://${marquee_host}:${marquee_port}/now-playing.json"
+          url: "http://${sidecar_host}:${sidecar_port}/state.json"
           capture_response: true
           on_response:
             then:
               - lambda: |-
-                  bool playing = false;
+                  int ver = -1; bool playing = false;
                   json::parse_json(body, [&](JsonObject root) -> bool {
-                    playing = root["playing"] | false; return true;
+                    ver = root["ver"] | -1;
+                    playing = root["playing"] | false;
+                    return true;
                   });
-                  id(prev_playing) = playing;
+                  id(now_playing) = playing;
+                  if (ver != id(prev_ver)) { id(prev_ver) = ver; id(card_dirty) = true; }
               - if:
                   condition:
-                    lambda: "return id(prev_playing);"
+                    lambda: "return id(card_dirty);"
+                  then:
+                    - lambda: "id(card_dirty) = false;"
+                    - component.update: card_img
+              - if:
+                  condition:
+                    lambda: "return id(now_playing);"
                   then:
                     - light.turn_on:
                         id: backlight
@@ -149,3 +151,10 @@ interval:
                     - light.turn_on:
                         id: backlight
                         brightness: 100%
+      # Redraw once a freshly-downloaded card has decoded.
+      - if:
+          condition:
+            lambda: "return id(redraw_pending);"
+          then:
+            - lambda: "id(redraw_pending) = false;"
+            - component.update: panel

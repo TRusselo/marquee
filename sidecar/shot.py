@@ -8,6 +8,11 @@ Cadence: poll now-playing.json fast (POLL_EVERY); re-render only when the state
 meaningfully changes (play/pause/stop/title/seek) so those show quickly, plus a
 slow PROGRESS_EVERY heartbeat for the creeping progress bar. Idle -> one frame,
 then Chromium sleeps.
+
+Serves two routes:
+  /card.jpg    the current 800x480 card image
+  /state.json  {"ver": N, "playing": bool} — ver bumps on every new frame, so a
+               client can cheaply poll this and only re-fetch card.jpg on change.
 """
 import os
 import sys
@@ -71,20 +76,35 @@ def fetch_json(url, timeout=5):
         return json.loads(r.read().decode("utf-8"))
 
 
-_latest = {"jpg": None}
+_latest = {"jpg": None, "ver": 0, "playing": False}
 _latest_lock = threading.Lock()
 
 
-def publish(jpg):
-    """Atomically make jpg the frame served to clients."""
+def publish(jpg, playing):
+    """Atomically make jpg the frame served to clients and bump the version."""
     with _latest_lock:
         _latest["jpg"] = jpg
+        _latest["ver"] += 1
+        _latest["playing"] = bool(playing)
 
 
 class CardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.split("?")[0] != "/card.jpg":
-            self.send_error(404, "only /card.jpg")
+        path = self.path.split("?")[0]
+        if path == "/state.json":
+            with _latest_lock:
+                body = json.dumps(
+                    {"ver": _latest["ver"], "playing": _latest["playing"]}
+                ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path != "/card.jpg":
+            self.send_error(404, "only /card.jpg or /state.json")
             return
         with _latest_lock:
             jpg = _latest["jpg"]
@@ -165,10 +185,10 @@ def run():
     r = Renderer(c["url"], c["width"], c["height"], c["quality"])
     r.start()
 
-    def do_capture():
+    def do_capture(playing):
         r.reload()
         time.sleep(c["settle"])
-        publish(r.capture())
+        publish(r.capture(), playing)
 
     prev = None
     prev_mono = time.monotonic()
@@ -198,7 +218,7 @@ def run():
                 reason = "idle"
 
             if reason:
-                do_capture()
+                do_capture(cur["playing"])
                 last_capture = now
                 idle_captured = not cur["playing"]
                 print(f"captured ({reason})", flush=True)
@@ -260,8 +280,11 @@ def _selftest():
     assert got["playing"] is True and got["title"] == "Family Guy" and got["offset"] == 42, got
     srv.shutdown()
 
-    # File server: 503 before any frame, image/jpeg 200 after publish().
-    _latest["jpg"] = None
+    # File server: 503 before a frame; /card.jpg + /state.json after publish().
+    with _latest_lock:
+        _latest["jpg"] = None
+        _latest["ver"] = 0
+        _latest["playing"] = False
     csrv = ThreadingHTTPServer(("127.0.0.1", 0), CardHandler)
     threading.Thread(target=csrv.serve_forever, daemon=True).start()
     cport = csrv.server_address[1]
@@ -270,13 +293,22 @@ def _selftest():
         assert False, "expected 503 before first frame"
     except urllib.error.HTTPError as e:
         assert e.code == 503, e.code
-    publish(b"\xff\xd8\xff-not-a-real-jpeg-but-bytes")
+    with urllib.request.urlopen(f"http://127.0.0.1:{cport}/state.json", timeout=5) as r:
+        st = json.loads(r.read())
+        assert st == {"ver": 0, "playing": False}, st
+    publish(b"\xff\xd8\xff-not-a-real-jpeg-but-bytes", True)
     with urllib.request.urlopen(f"http://127.0.0.1:{cport}/card.jpg", timeout=5) as r:
         assert r.status == 200
         assert r.headers["Content-Type"] == "image/jpeg", r.headers["Content-Type"]
         assert r.read() == b"\xff\xd8\xff-not-a-real-jpeg-but-bytes"
+    with urllib.request.urlopen(f"http://127.0.0.1:{cport}/state.json", timeout=5) as r:
+        st = json.loads(r.read())
+        assert st == {"ver": 1, "playing": True}, st
     csrv.shutdown()
-    _latest["jpg"] = None
+    with _latest_lock:
+        _latest["jpg"] = None
+        _latest["ver"] = 0
+        _latest["playing"] = False
 
     print("selftest ok")
 
