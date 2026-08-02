@@ -1,0 +1,151 @@
+# Marquee CrowPanel 7" (ESP32-S3-WROOM-1-N4R8) — SCREENSHOT MODE.
+# Displays the real card rendered by the marquee-shot sidecar. Dumb image panel:
+# a single full-screen card.jpg + a backlight-only now-playing poll. No LVGL.
+#
+# Requires the sidecar running:  docker compose --profile panel up -d
+substitutions:
+  sidecar_host: "192.168.1.12"     # Unraid host running marquee-shot
+  sidecar_port: "8088"             # marquee-shot SERVE_PORT
+  marquee_host: "192.168.1.12"     # marquee (now-playing.json, for backlight)
+  marquee_port: "8084"
+  poll_every: "5s"
+
+esphome:
+  name: marquee-panel
+  friendly_name: Marquee Panel
+  platformio_options:
+    build_flags: "-DBOARD_HAS_PSRAM"
+    board_build.esp-idf.memory_type: qio_opi
+    board_build.flash_mode: dio
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: y
+      CONFIG_ESP32S3_DATA_CACHE_64KB: y
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: y
+      CONFIG_SPIRAM_RODATA: y
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  manual_ip:
+    static_ip: 192.168.1.174
+    gateway: 192.168.1.254
+    subnet: 255.255.255.0
+    dns1: 192.168.1.20
+
+logger:
+  hardware_uart: UART0     # console off the touch-i2c pins (GPIO19/20)
+api:
+ota:
+  - platform: esphome
+
+http_request:
+  id: http
+  timeout: 8s
+  watchdog_timeout: 12s
+  useragent: marquee-panel
+  verify_ssl: false
+
+output:
+  - platform: ledc
+    pin: 2
+    frequency: 1220Hz
+    id: backlight_pwm
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    id: backlight
+    name: Backlight
+    restore_mode: ALWAYS_ON
+
+i2c:
+  sda: 19
+  scl: 20
+  scan: false
+
+globals:
+  - {id: prev_playing,   type: bool, restore_value: no, initial_value: "false"}
+  - {id: redraw_pending, type: bool, restore_value: no, initial_value: "false"}
+
+online_image:
+  - id: card_img
+    url: "http://${sidecar_host}:${sidecar_port}/card.jpg"
+    format: JPEG
+    type: RGB565
+    resize: 800x480
+    update_interval: never
+    on_download_finished:
+      - lambda: "id(redraw_pending) = true;"
+
+display:
+  - platform: rpi_dpi_rgb
+    id: panel
+    update_interval: never
+    auto_clear_enabled: false
+    color_order: RGB
+    pclk_inverted: true
+    dimensions: {width: 800, height: 480}
+    de_pin: 41
+    hsync_pin: 39
+    vsync_pin: 40
+    pclk_pin: 0
+    hsync_front_porch: 40
+    hsync_pulse_width: 48
+    hsync_back_porch: 13
+    vsync_front_porch: 1
+    vsync_pulse_width: 31
+    vsync_back_porch: 13
+    data_pins:
+      red:   [14, 21, 47, 48, 45]
+      green: [9, 46, 3, 8, 16, 1]
+      blue:  [15, 7, 6, 5, 4]
+    pages:
+      - id: page_card
+        lambda: |-
+          if (id(card_img).get_width() > 0) it.image(0, 0, id(card_img));
+          else it.fill(Color::BLACK);
+
+interval:
+  - interval: ${poll_every}
+    then:
+      # 1) refresh the card image every poll (progress advances)
+      - component.update: card_img
+      # 2) redraw once the new frame has decoded
+      - if:
+          condition:
+            lambda: "return id(redraw_pending);"
+          then:
+            - lambda: "id(redraw_pending) = false;"
+            - component.update: panel
+      # 3) backlight: dim during playback (cinema), normal when idle
+      - http_request.get:
+          url: "http://${marquee_host}:${marquee_port}/now-playing.json"
+          capture_response: true
+          on_response:
+            then:
+              - lambda: |-
+                  bool playing = false;
+                  json::parse_json(body, [&](JsonObject root) -> bool {
+                    playing = root["playing"] | false; return true;
+                  });
+                  id(prev_playing) = playing;
+              - if:
+                  condition:
+                    lambda: "return id(prev_playing);"
+                  then:
+                    - light.turn_on:
+                        id: backlight
+                        brightness: 40%
+                  else:
+                    - light.turn_on:
+                        id: backlight
+                        brightness: 100%
