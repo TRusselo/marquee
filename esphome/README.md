@@ -66,3 +66,16 @@ the panel is self-driven; you do *not* set `ESP32_HOST` for this to work.
 - Elecrow wiki — [CrowPanel 7.0" hardware / schematic / pinout](https://www.elecrow.com/wiki/esp32-display-702727-intelligent-touch-screen-wi-fi26ble-800480-hmi-display.html)
 - espboards.dev — [configuring the Elecrow 7" in ESPHome](https://www.espboards.dev/blog/esphome-configuring-elecrow-7-inch-display/) (source of the pin map used here)
 - ESPHome devices — [Elecrow CrowPanel 5" sibling](https://devices.esphome.io/devices/elecrow-5inch-esp32-display/)
+
+## Two ways to drive the panel
+
+- **Screenshot mode (recommended, pixel-perfect):** run the optional
+  `marquee-shot` sidecar (`docker compose --profile panel up -d`) and flash
+  `marquee-crowpanel-shot.yaml`. The panel displays the real card image; nothing
+  is reconstructed on-device.
+- **On-device modes (no sidecar):** `marquee-crowpanel.yaml` (lambda card) or
+  `marquee-crowpanel-lvgl.yaml` (LVGL card) reconstruct the card from
+  `now-playing.json` + art on the ESP itself. Kept as sidecar-free fallbacks.
+
+Note: ESPHome 2026.7's LVGL needs `buffer_size: 5%` on this 800×480 RGB panel or
+WiFi's internal RAM is starved; screenshot mode avoids LVGL entirely.
