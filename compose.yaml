@@ -23,3 +23,23 @@ services:
       JELLYFIN_API_KEY: ""    # Jellyfin API key (when jellyfin)
     volumes:
       - ./data:/config
+
+  # OPTIONAL ESP-panel sidecar. Renders the real card to card.jpg for an ESP32
+  # display. Nest Hub users never need this — it is gated behind the `panel`
+  # profile, so a plain `docker compose up` does NOT build or start it.
+  #   panel users:  docker compose --profile panel up -d
+  marquee-shot:
+    build: ./sidecar
+    image: marquee-shot:local
+    container_name: marquee-shot
+    profiles: ["panel"]
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [marquee]
+    environment:
+      MARQUEE_URL: "http://127.0.0.1:8084"
+      PANEL_WIDTH: "800"
+      PANEL_HEIGHT: "480"
+      CAPTURE_EVERY: "5"
+      JPEG_QUALITY: "85"
+      SERVE_PORT: "8088"
