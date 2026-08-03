@@ -72,7 +72,12 @@ Marquee card logic**, with inline comments explaining what draws on screen.
 
 ## Documentation for the board (it ships with none)
 
-- Elecrow wiki — [CrowPanel 7.0" **with ESPHome**](https://www.elecrow.com/wiki/CrowPanel_ESP2_7.0-inch_with_ESPHome.html)
-- Elecrow wiki — [CrowPanel 7.0" hardware / schematic / pinout](https://www.elecrow.com/wiki/esp32-display-702727-intelligent-touch-screen-wi-fi26ble-800480-hmi-display.html)
-- espboards.dev — [configuring the Elecrow 7" in ESPHome](https://www.espboards.dev/blog/esphome-configuring-elecrow-7-inch-display/) (source of the pin map used here)
+**Heads-up:** Elecrow's own pages for this device are unreliable — wrong/omitted
+pins and stale ESPHome snippets. The **espboards.dev** post below is the most
+trustworthy reference; much of it is literally correcting the errors on Elecrow's
+page. Prefer it, and treat the Elecrow links as secondary.
+
+- espboards.dev — [configuring the Elecrow 7" in ESPHome](https://www.espboards.dev/blog/esphome-configuring-elecrow-7-inch-display/) — **most reliable; source of the pin map used here**
+- Elecrow wiki — [CrowPanel 7.0" with ESPHome](https://www.elecrow.com/wiki/CrowPanel_ESP2_7.0-inch_with_ESPHome.html) (unreliable — cross-check)
+- Elecrow wiki — [CrowPanel 7.0" hardware / schematic / pinout](https://www.elecrow.com/wiki/esp32-display-702727-intelligent-touch-screen-wi-fi26ble-800480-hmi-display.html) (unreliable — cross-check)
 - ESPHome devices — [Elecrow CrowPanel 5" sibling](https://devices.esphome.io/devices/elecrow-5inch-esp32-display/)
