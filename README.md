@@ -18,7 +18,7 @@ Marquee turns a Google Nest Hub into a clean now-playing display for Plex, Emby,
 >
 > - **`marquee-shot` sidecar** — a small container that renders Marquee's real card with headless Chromium and serves it as a flat image, so the panel shows the **pixel-perfect** card. Published at `ghcr.io/trusselo/marquee-shot`. → **[sidecar/README.md](sidecar/README.md)**
 > - **ESPHome panel configs** — the CrowPanel screenshot-mode config, plus on-device (no-sidecar) example configs that reconstruct the card on the ESP. → **[esphome/README.md](esphome/README.md)**
-> - **Enable it** per platform: an Unraid Community Applications template ([`unraid/marquee-shot.xml`](unraid/marquee-shot.xml)), a plain `docker run`, or the Compose `panel` profile.
+> - **Enable it** per platform: an Unraid Community Applications template ([`unraid/marquee-shot.xml`](unraid/marquee-shot.xml)), a plain `docker run`, or the Compose `panel` profile. **[sidecar/README.md](sidecar/README.md)**
 >
 > Everything else in this README is upstream Marquee, unchanged — run it exactly as documented below and add the panel on top.
 
