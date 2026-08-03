@@ -6,7 +6,7 @@ name: Build marquee-shot
 
 on:
   push:
-    branches: ["feature/esp32-support"]
+    branches: ["main"]
     tags: ["shot-v*"]
     paths:
       - "sidecar/**"

@@ -11,12 +11,12 @@
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/TRusselo/marquee/tree/feature/esp32-support/sidecar</Support>
+  <Support>https://github.com/TRusselo/marquee/tree/main/sidecar</Support>
   <Project>https://github.com/TRusselo/marquee</Project>
   <Overview>Optional ESP32-panel sidecar for Marquee. Renders Marquee's real now-playing card with headless Chromium and serves it as a flat image (/card.jpg) plus a tiny /state.json change signal, so an ESP32 panel (e.g. Elecrow CrowPanel) can display the pixel-perfect card. REQUIRES a running Marquee on your LAN; it does NOT modify Marquee. Nest Hub users do not need this. Uses host networking — set "Marquee URL" to your Marquee address.</Overview>
   <Category>MediaApp:Video HomeAutomation: Other:</Category>
   <WebUI>http://[IP]:8088/card.jpg</WebUI>
-  <Icon>https://raw.githubusercontent.com/TRusselo/marquee/feature/esp32-support/assets/marquee-icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/TRusselo/marquee/main/assets/marquee-icon.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <Description>Optional ESP32-panel sidecar for Marquee (screenshot renderer). Opt-in add-on that runs alongside Marquee; not needed for Nest Hub casting.</Description>

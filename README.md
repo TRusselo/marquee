@@ -10,6 +10,18 @@
 
 Marquee turns a Google Nest Hub into a clean now-playing display for Plex, Emby, or Jellyfin. It shows artwork, title, plot, genres, ratings, media details, progress, and a clock, then returns the Hub to ambient mode when playback stops.
 
+> ### 📺 This fork adds ESP32 panel support
+>
+> This is [TRusselo's fork](https://github.com/TRusselo/marquee). On top of everything upstream, it adds an **optional way to show the now-playing card on an ESP32 touch panel** (e.g. an Elecrow CrowPanel 7") running [ESPHome](https://esphome.io) — no Nest Hub required.
+>
+> It's a **decoupled add-on**: it talks to Marquee only over HTTP, so it runs against *any* Marquee (including the upstream image) and needs **no fork of the app itself**.
+>
+> - **`marquee-shot` sidecar** — a small container that renders Marquee's real card with headless Chromium and serves it as a flat image, so the panel shows the **pixel-perfect** card. Published at `ghcr.io/trusselo/marquee-shot`. → **[sidecar/README.md](sidecar/README.md)**
+> - **ESPHome panel configs** — the CrowPanel screenshot-mode config, plus on-device (no-sidecar) example configs that reconstruct the card on the ESP. → **[esphome/README.md](esphome/README.md)**
+> - **Enable it** per platform: an Unraid Community Applications template ([`unraid/marquee-shot.xml`](unraid/marquee-shot.xml)), a plain `docker run`, or the Compose `panel` profile.
+>
+> Everything else in this README is upstream Marquee, unchanged — run it exactly as documented below and add the panel on top.
+
 ![Marquee — Street template](https://github.com/Jamisonfitz/marquee/releases/download/v2.2.1/street.jpg)
 
 *Seven templates, per-block colors and fonts, every block movable — your setup will not look like anyone else's.*
