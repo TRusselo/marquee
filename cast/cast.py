@@ -43,7 +43,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.11.2"
+VERSION = "2.2.1"
 HUB_IP = os.environ.get("HUB_IP", "")
 PAGE_URL = os.environ.get("PAGE_URL", "")
 PLEX = os.environ.get("PLEX_HOST", "").rstrip("/")
@@ -161,7 +161,8 @@ SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
 THEMES = ("amber", "ice", "crimson", "emerald",
           "campaign", "concrete", "trophy", "bsides")
-TEMPLATES = ("spotlight", "split", "hero", "lowerthird", "bigclock", "street")
+TEMPLATES = ("spotlight", "split", "hero", "lowerthird", "bigclock", "street",
+             "fanart")
 TITLE_FONTS = ("system", "bebas", "oswald", "playfair", "cinzel", "grotesk")
 ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
@@ -172,7 +173,6 @@ DEFAULT_SETTINGS = {
     "accent": "",
     "titleFont": "system",
     "bodyFont": "system",
-    "posterSide": "right",
     "clockFormat": "12h",
     "clockSeconds": False,
     "showPlot": True, "showGenres": True, "showScores": True,
@@ -184,7 +184,9 @@ DEFAULT_SETTINGS = {
     "rotateSeconds": 30,
     "showWeather": False, "weatherZip": "", "weatherUnits": "f",
     "weatherFX": True, "weatherIntensity": 2,
-    "blockLayout": {},       # {template: {block: {x,y,width,scale,align,font}}}
+    "fanartKey": "", "fanartType": "background", "fanartRotateSeconds": 600,
+    "blockLayout": {},       # {template: {block: {x,y,width,scale,align,font,color}}}
+    "presets": [],           # user-saved looks: {name, template, blockLayout, blockVisibility, metaOpts}
     "blockVisibility": {},  # {template: {block: bool}}, sparse — only overrides
     "mediaBackend": "",       # "" = inherit MEDIA_BACKEND env (plex when unset)
     "plexHost": "", "plexToken": "",
@@ -194,7 +196,7 @@ DEFAULT_SETTINGS = {
 
 # Keys/tokens are write-only: stored in settings.json but never served back to
 # a browser — /settings.json replaces each with a saved/not-saved hint.
-SECRET_SETTINGS = ("plexToken", "embyKey", "jellyfinKey")
+SECRET_SETTINGS = ("plexToken", "embyKey", "jellyfinKey", "fanartKey")
 
 
 def served_settings(settings=None):
@@ -213,18 +215,81 @@ EDITABLE_BLOCKS = ("clock", "weather", "identity", "meta", "plot", "ratings",
 # excluded: it's a content-driven badge (only appears when TMDB has a
 # credits-scene tag), not something toggling it on would ever show anything.
 TOGGLEABLE_BLOCKS = ("clock", "weather", "identity", "meta", "plot",
-                     "ratings", "progress", "poster")
+                     "ratings", "progress", "poster", "backdrop")
 # Each template's shipped block set, mirrored from the display:none rules in
 # output/index.html. A user's blockVisibility only needs to store where they
 # differ from this — the default itself never touches settings.json.
 TEMPLATE_DEFAULT_BLOCKS = {
-    "spotlight": ("clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
-    "split": ("clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
-    "hero": ("clock", "identity", "meta", "ratings", "progress"),
-    "lowerthird": ("clock", "identity", "meta", "ratings", "progress"),
-    "bigclock": ("clock", "identity", "meta", "plot", "progress"),
+    "spotlight": ("backdrop", "clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
+    "split": ("backdrop", "clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
+    "hero": ("backdrop", "clock", "identity", "meta", "ratings", "progress"),
+    "lowerthird": ("backdrop", "clock", "identity", "meta", "ratings", "progress"),
+    "bigclock": ("backdrop", "clock", "identity", "progress"),
     "street": ("clock", "identity", "meta", "plot", "ratings", "progress", "poster"),
+    # Fanart ships bare on purpose: the rotating art is the whole card until
+    # the user adds blocks. Its art layer replaces backdrop (like street).
+    "fanart": (),
 }
+
+# fanart.tv v3 art types, user-facing name -> (movie key, tv key).
+FANART_KEY_ENV = os.environ.get("FANART_API_KEY", "")
+FANART_TYPES = {
+    "background": ("moviebackground", "showbackground"),
+    "poster": ("movieposter", "tvposter"),
+    "logo": ("hdmovielogo", "hdtvlogo"),
+    "clearart": ("hdmovieclearart", "hdclearart"),
+    "banner": ("moviebanner", "tvbanner"),
+    "thumb": ("moviethumb", "tvthumb"),
+}
+
+
+def clamp_fanart_rotate(value):
+    """Fanart rotation seconds: 300 (5 min) floor — the Hub is ambient, not a
+    slideshow, and fanart.tv's CDN deserves the courtesy. 3600 ceiling."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return 600
+    return max(300, min(3600, seconds))
+
+
+def fanart_api_key(settings=None):
+    s = settings if settings is not None else load_settings()
+    return s.get("fanartKey") or FANART_KEY_ENV
+
+
+def fanart_fetch(kind, fid, key):
+    """Raw fanart.tv doc for /movies/{tmdb|imdb} or /tv/{tvdb}; {} on miss."""
+    try:
+        url = f"https://webservice.fanart.tv/v3/{kind}/{fid}?api_key={key}"
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        print(f"fanart.tv fetch failed ({kind}/{fid}): {e}", flush=True)
+        return {}
+
+
+def fanart_urls(doc, is_movie, settings=None):
+    """Best-liked art URLs of the configured type, ready for the card.
+
+    Picked per poll (not at cache time) so changing the art type in settings
+    takes effect on the next tick instead of the next title."""
+    if not doc:
+        return []
+    s = settings if settings is not None else load_settings()
+    kind = s.get("fanartType")
+    if kind not in FANART_TYPES:
+        kind = "background"
+    arts = doc.get(FANART_TYPES[kind][0 if is_movie else 1]) or []
+    arts = [a for a in arts if isinstance(a, dict) and a.get("url")]
+
+    def likes(a):
+        try:
+            return int(a.get("likes") or 0)
+        except (TypeError, ValueError):
+            return 0
+    arts.sort(key=likes, reverse=True)
+    return [a["url"] for a in arts[:12]]
 
 _meta_cache = {}  # ratingKey -> extras dict
 
@@ -429,6 +494,7 @@ def emby_download_art(item):
         if backdrop_id:
             emby_save_image(backdrop_id, "Backdrop/0", "backdrop.jpg", 1280, 800)
             out["backdrop"] = True
+            # ESP panel add-on: small backdrop variant for the on-device examples.
             emby_save_image(backdrop_id, "Backdrop/0", "backdrop-panel.jpg", 480, 270)
     except Exception:
         pass
@@ -437,7 +503,7 @@ def emby_download_art(item):
         if "Logo" in tags or logo_id:
             emby_save_image(logo_id, "Logo", "logo.png", 800, 310)
             out["logo"] = True
-            emby_save_image(logo_id, "Logo", "logo-panel.png", 400, 150)
+            emby_save_image(logo_id, "Logo", "logo-panel.png", 400, 150)   # ESP panel add-on
     except Exception:
         pass
     return out
@@ -453,7 +519,7 @@ def download_art(item, rating_key):
     if item.get("art"):
         transcode_to("backdrop.jpg", item.get("art"), 1280, 800)
         out["backdrop"] = True
-        transcode_to("backdrop-panel.jpg", item.get("art"), 480, 270)
+        transcode_to("backdrop-panel.jpg", item.get("art"), 480, 270)   # ESP panel add-on
     try:
         with urllib.request.urlopen(
                 plex_url(f"/library/metadata/{rating_key}/clearLogo"), timeout=15) as r:
@@ -469,7 +535,8 @@ def library_extras(rating_key, is_movie=False):
     if rating_key in _meta_cache:
         return _meta_cache[rating_key]
     x = {"genres": [], "imdb": None, "stinger": [],
-         "poster": False, "backdrop": False, "logo": False}
+         "poster": False, "backdrop": False, "logo": False,
+         "fanartDoc": {}, "fanartMovie": is_movie}
     try:
         root = fetch_xml(f"/library/metadata/{rating_key}?includeRatings=1")
         item = root.find("./*")
@@ -484,6 +551,27 @@ def library_extras(rating_key, is_movie=False):
                         x["stinger"] = tmdb_stinger(g.get("id")[7:])
                         break
             x.update(download_art(item, rating_key))
+            fkey = fanart_api_key()
+            if fkey:
+                if is_movie:
+                    guids = [(g.get("id") or "") for g in item.findall("Guid")]
+                    fid = next((g[7:] for g in guids if g.startswith("tmdb://")),
+                               None) or next((g[7:] for g in guids
+                                              if g.startswith("imdb://")), None)
+                    if fid:
+                        x["fanartDoc"] = fanart_fetch("movies", fid, fkey)
+                else:
+                    # fanart.tv keys TV on the SHOW's TheTVDB id; an episode's
+                    # own tvdb guid is the episode, so read the grandparent.
+                    show = item
+                    if item.get("grandparentRatingKey"):
+                        show = fetch_xml("/library/metadata/"
+                                         + item.get("grandparentRatingKey")).find("./*")
+                    guids = ([(g.get("id") or "") for g in show.findall("Guid")]
+                             if show is not None else [])
+                    fid = next((g[7:] for g in guids if g.startswith("tvdb://")), None)
+                    if fid:
+                        x["fanartDoc"] = fanart_fetch("tv", fid, fkey)
     except Exception as e:
         print(f"metadata fetch failed for {rating_key}: {e}", flush=True)
     _meta_cache.clear()  # only ever need the current item
@@ -572,6 +660,9 @@ def parse_emby_session(session, extras):
     x = extras(item)
     if x.get("stinger"):
         info["stinger"] = x["stinger"]
+    fa = fanart_urls(x.get("fanartDoc"), x.get("fanartMovie", True))
+    if fa:
+        info["fanart"] = fa
     info["poster"] = x.get("poster", False)
     info["backdrop"] = x.get("backdrop", False)
     info["logo"] = x.get("logo", False)
@@ -595,6 +686,9 @@ def parse_session(video, extras=library_extras):
     x = (extras(a("ratingKey"), a("type") == "movie") if a("ratingKey")
          else {"genres": [], "imdb": None, "stinger": [],
                "poster": False, "backdrop": False, "logo": False})
+    fa = fanart_urls(x.get("fanartDoc"), x.get("fanartMovie", True))
+    if fa:
+        info["fanart"] = fa
 
     player = video.find("Player")
     if player is not None and player.get("state"):
@@ -813,13 +907,36 @@ def emby_extras(item):
     key = item.get("Id")
     if key and key in _emby_meta_cache:
         return _emby_meta_cache[key]
-    x = {"stinger": [], "poster": False, "backdrop": False, "logo": False}
+    is_movie = item.get("Type") == "Movie"
+    x = {"stinger": [], "poster": False, "backdrop": False, "logo": False,
+         "fanartDoc": {}, "fanartMovie": is_movie}
     try:
         tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb")
-        if TMDB_KEY and item.get("Type") == "Movie" and tmdb_id:
+        if TMDB_KEY and is_movie and tmdb_id:
             x["stinger"] = tmdb_stinger(tmdb_id)
     except Exception as e:
         print(f"emby stinger failed: {e}", flush=True)
+    fkey = fanart_api_key()
+    if fkey:
+        try:
+            ids = item.get("ProviderIds") or {}
+            if is_movie:
+                fid = ids.get("Tmdb") or ids.get("Imdb")
+                if fid:
+                    x["fanartDoc"] = fanart_fetch("movies", fid, fkey)
+            else:
+                # fanart.tv keys TV on the show's TheTVDB id — an episode's
+                # own Tvdb provider id is the episode, so look up the series.
+                fid = None
+                if item.get("SeriesId"):
+                    got = emby_fetch_json(f"/Items?Ids={item['SeriesId']}"
+                                          "&Fields=ProviderIds")
+                    series = (got.get("Items") or [{}])[0]
+                    fid = (series.get("ProviderIds") or {}).get("Tvdb")
+                if fid:
+                    x["fanartDoc"] = fanart_fetch("tv", fid, fkey)
+        except Exception as e:
+            print(f"emby fanart lookup failed: {e}", flush=True)
     try:
         x.update(emby_download_art(item))
     except Exception as e:
@@ -928,13 +1045,13 @@ def load_settings():
         merged = {**DEFAULT_SETTINGS, **{k: v for k, v in saved.items() if k in DEFAULT_SETTINGS}}
         merged["blockLayout"] = migrate_block_layout(
             merged["blockLayout"], merged.get("template") or "spotlight")
-        return merged
+        return migrate_show_flags(merged)
     except Exception:
         return dict(DEFAULT_SETTINGS)
 
 
 def clean_block_position(position):
-    """One block's {x,y,width,scale,align,font}, numbers clamped to sane
+    """One block's {x,y,width,scale,align,font,color}, numbers clamped to sane
     ranges, unknown keys dropped."""
     item = {}
     for key, low, high in (("x", -100, 100), ("y", -100, 100),
@@ -946,6 +1063,9 @@ def clean_block_position(position):
         item["align"] = position["align"]
     if position.get("font") in TITLE_FONTS:
         item["font"] = position["font"]
+    color = position.get("color")
+    if isinstance(color, str) and ACCENT_RE.match(color):
+        item["color"] = color
     return item
 
 
@@ -983,6 +1103,87 @@ def clean_block_visibility(value):
         if per_template:
             cleaned[template] = per_template
     return cleaned
+
+
+# Display-only keys a shared setup may carry along (never location or creds).
+PRESET_EXTRA_KEYS = ("clockFormat", "clockSeconds", "weatherFX",
+                     "weatherIntensity", "weatherUnits",
+                     "fanartType", "fanartRotateSeconds")
+
+
+def clean_presets(value):
+    """User-saved looks, capped and clamped: each rides the same cleaners as
+    the live config so Import can't smuggle junk through a preset. `author`
+    credits whoever exported a shared setup; `extras` are display-only keys."""
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for preset in value[:20]:
+        if not isinstance(preset, dict) or preset.get("template") not in TEMPLATES:
+            continue
+        name = preset.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        item = {
+            "name": name.strip()[:40],
+            "template": preset["template"],
+            "blockLayout": clean_block_layout(preset.get("blockLayout")),
+            "blockVisibility": clean_block_visibility(preset.get("blockVisibility")),
+            "metaOpts": {k: bool(preset.get("metaOpts", {}).get(k, True))
+                         for k in ("genres", "mediainfo", "rating", "runtime")},
+        }
+        author = preset.get("author")
+        if isinstance(author, str) and author.strip():
+            item["author"] = author.strip()[:40]
+        extras = preset.get("extras")
+        if isinstance(extras, dict):
+            kept = {}
+            for k in PRESET_EXTRA_KEYS:
+                if k in extras:
+                    kept[k] = extras[k]
+            if kept.get("clockFormat") not in ("12h", "24h"):
+                kept.pop("clockFormat", None)
+            if kept.get("weatherUnits") not in ("f", "c"):
+                kept.pop("weatherUnits", None)
+            if not isinstance(kept.get("weatherIntensity"), int) \
+                    or not 1 <= kept.get("weatherIntensity", 0) <= 4:
+                kept.pop("weatherIntensity", None)
+            for boolean in ("clockSeconds", "weatherFX"):
+                if boolean in kept and not isinstance(kept[boolean], bool):
+                    kept.pop(boolean, None)
+            if kept.get("fanartType") not in FANART_TYPES:
+                kept.pop("fanartType", None)
+            if not (isinstance(kept.get("fanartRotateSeconds"), int)
+                    and 300 <= kept["fanartRotateSeconds"] <= 3600):
+                kept.pop("fanartRotateSeconds", None)
+            if kept:
+                item["extras"] = kept
+        cleaned.append(item)
+    return cleaned
+
+
+# Old flat presence gates -> per-template visibility overrides. The v2 settings
+# page has no global show* switches; presence lives in blockVisibility (which
+# now includes backdrop). Old saves and old exports still carry the flags, so
+# fold them in wherever they say "off", then neutralize to True — idempotent,
+# and an explicit visibility override always wins (setdefault).
+# ponytail: one-shot migration like migrate_block_layout; delete both together.
+SHOW_FLAG_BLOCKS = {"showPlot": "plot", "showClock": "clock",
+                    "showScores": "ratings", "showProgress": "progress",
+                    "backdrop": "backdrop"}
+
+
+def migrate_show_flags(settings):
+    if not isinstance(settings.get("blockVisibility"), dict):
+        settings["blockVisibility"] = {}
+    for flag, block in SHOW_FLAG_BLOCKS.items():
+        if settings.get(flag) is False:
+            for template in TEMPLATES:
+                if block in TEMPLATE_DEFAULT_BLOCKS[template]:
+                    settings["blockVisibility"].setdefault(
+                        template, {}).setdefault(block, False)
+        settings[flag] = True
+    return settings
 
 
 def visible_blocks(template, visibility):
@@ -1072,8 +1273,13 @@ class WebHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             merged = {**DEFAULT_SETTINGS,
                       **{k: v for k, v in body.items() if k in DEFAULT_SETTINGS}}
-            if merged["posterSide"] not in ("left", "right"):
-                merged["posterSide"] = "right"
+            # Old-shape imports migrate on the way in too: pre-v1.10 flat
+            # blockLayout nests under the incoming template, and old flat
+            # show*/backdrop gates fold into blockVisibility — so an ancient
+            # export pasted into Import round-trips instead of losing data.
+            merged["blockLayout"] = migrate_block_layout(
+                merged["blockLayout"], merged.get("template") or "spotlight")
+            migrate_show_flags(merged)
             if merged["theme"] not in THEMES:
                 merged["theme"] = "amber"
             if merged["template"] not in TEMPLATES:
@@ -1117,6 +1323,9 @@ class WebHandler(BaseHTTPRequestHandler):
             merged["showWeather"] = bool(merged["showWeather"])
             merged["weatherFX"] = bool(merged["weatherFX"])
             merged["weatherIntensity"] = clean_intensity(merged["weatherIntensity"])
+            if merged["fanartType"] not in FANART_TYPES:
+                merged["fanartType"] = "background"
+            merged["fanartRotateSeconds"] = clamp_fanart_rotate(merged["fanartRotateSeconds"])
             merged["clockSeconds"] = bool(merged["clockSeconds"])
             if not (isinstance(merged["accent"], str)
                     and (merged["accent"] == "" or ACCENT_RE.match(merged["accent"]))):
@@ -1126,6 +1335,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 merged["hubIp"] = ""
             merged["blockLayout"] = clean_block_layout(merged["blockLayout"])
             merged["blockVisibility"] = clean_block_visibility(merged["blockVisibility"])
+            merged["presets"] = clean_presets(merged["presets"])
             atomic_write(SETTINGS_PATH, json.dumps(merged))
             self._send(json.dumps({"ok": True}), "application/json")
         except Exception as e:
@@ -1255,6 +1465,22 @@ def selftest():
     assert "secret" not in json.dumps(served)
     assert served["envBackend"] == ENV_BACKEND   # page shows the env default
 
+    # fanart: bare template, best-liked-first URL pick, type picked per poll
+    assert "fanart" in TEMPLATES and TEMPLATE_DEFAULT_BLOCKS["fanart"] == ()
+    _fa = {"moviebackground": [{"url": "u1", "likes": "2"},
+                               {"url": "u2", "likes": "9"}, {"nourl": 1}],
+           "tvposter": [{"url": "tv1"}]}
+    assert fanart_urls(_fa, True, {"fanartType": "background"}) == ["u2", "u1"]
+    assert fanart_urls(_fa, False, {"fanartType": "poster"}) == ["tv1"]
+    assert fanart_urls(_fa, True, {"fanartType": "bogus"}) == ["u2", "u1"]
+    assert fanart_urls({}, True, {"fanartType": "background"}) == []
+    assert fanart_api_key({"fanartKey": "abc"}) == "abc"
+    assert clamp_fanart_rotate(30) == 300      # 5-minute floor
+    assert clamp_fanart_rotate(99999) == 3600
+    assert clamp_fanart_rotate("junk") == 600
+    assert clamp_fanart_rotate(900) == 900
+    assert "fanartKey" in SECRET_SETTINGS  # write-only, never served or exported
+
     # plex creds: settings page wins, env is the fallback
     _saved_plex = {k: os.environ.get(k) for k in ("PLEX_HOST", "PLEX_TOKEN")}
     try:
@@ -1307,6 +1533,19 @@ def selftest():
     assert info["state"] == "paused"
     assert info["stinger"] == ["after"]
     assert info["poster"] and info["backdrop"] and info["logo"]
+
+    # ESP panel add-on: emby_download_art must also request the small panel-sized
+    # backdrop/logo variants used by the on-device example ESPHome configs.
+    _saved_variants = []
+    _orig_save_img = globals()["emby_save_image"]
+    globals()["emby_save_image"] = \
+        lambda item_id, kind, out, w, h: _saved_variants.append((out, w, h))
+    try:
+        emby_download_art({"Id": "42", "Type": "Movie", "ImageTags": {"Logo": "x"}})
+        assert ("backdrop-panel.jpg", 480, 270) in _saved_variants, _saved_variants
+        assert ("logo-panel.png", 400, 150) in _saved_variants, _saved_variants
+    finally:
+        globals()["emby_save_image"] = _orig_save_img
     ep = ET.fromstring(SAMPLE_SESSION)
     ep.set("type", "episode")
     ep.set("grandparentTitle", "Severance")
@@ -1315,10 +1554,48 @@ def selftest():
     info = parse_session(ep, extras=lambda k, m: dict(SAMPLE_EXTRAS, stinger=[]))
     assert info["title"] == "Severance"
     assert info["subtitle"] == "S2 · E5 · The Devil Wears Prada 2"
-    merged = {**DEFAULT_SETTINGS, **{"posterSide": "left", "bogus": 1, "showPlot": False}}
-    assert "bogus" not in DEFAULT_SETTINGS and merged["posterSide"] == "left" \
+    merged = {**DEFAULT_SETTINGS, **{"bogus": 1, "showPlot": False}}
+    assert "bogus" not in DEFAULT_SETTINGS and "posterSide" not in DEFAULT_SETTINGS \
         and merged["showPlot"] is False and merged["showClock"] is True \
         and merged["template"] == "spotlight"
+    # show*-flag migration: off-flags become per-template visibility overrides
+    # (only on templates that carry the block), explicit overrides win, flags
+    # neutralize to True so the migration is idempotent.
+    mig = migrate_show_flags({"showPlot": False, "backdrop": False,
+                              "blockVisibility": {"spotlight": {"plot": True}}})
+    assert mig["showPlot"] is True and mig["backdrop"] is True
+    assert mig["blockVisibility"]["spotlight"]["plot"] is True  # explicit wins
+    assert mig["blockVisibility"]["split"]["plot"] is False
+    assert "plot" not in mig["blockVisibility"].get("hero", {})  # hero has no plot
+    assert mig["blockVisibility"]["hero"]["backdrop"] is False
+    assert all("backdrop" in TEMPLATE_DEFAULT_BLOCKS[t] for t in TEMPLATES
+               if t not in ("street", "fanart"))  # their art layer IS the backdrop
+    assert "backdrop" not in TEMPLATE_DEFAULT_BLOCKS["street"]
+    assert TEMPLATE_DEFAULT_BLOCKS["bigclock"] == ("backdrop", "clock", "identity", "progress")
+    assert "backdrop" in TOGGLEABLE_BLOCKS
+    # per-block color: hex accepted, junk dropped
+    assert clean_block_position({"color": "#AaBbCc"})["color"] == "#AaBbCc"
+    assert "color" not in clean_block_position({"color": "red"})
+    # presets: capped at 20, names clamped, nested shapes ride the cleaners
+    junk = [{"name": "  Look %d  " % i, "template": "spotlight",
+             "blockLayout": {"spotlight": {"identity": {"x": 999}}},
+             "blockVisibility": {"spotlight": {"plot": False}},
+             "metaOpts": {"genres": 0}} for i in range(25)]
+    junk.append({"name": "bad", "template": "nope"})
+    presets = clean_presets(junk)
+    assert len(presets) == 20 and presets[0]["name"] == "Look 0"
+    assert presets[0]["blockLayout"]["spotlight"]["identity"]["x"] == 100
+    assert presets[0]["metaOpts"]["genres"] is False \
+        and presets[0]["metaOpts"]["rating"] is True
+    assert clean_presets("junk") == []
+    # shared-setup credit + display extras: author clamped, junk extras dropped
+    shared = clean_presets([{"name": "Neon", "template": "street",
+                             "author": "  TRusselo  " + "x" * 60,
+                             "extras": {"clockFormat": "24h", "weatherIntensity": 9,
+                                        "weatherFX": "yes", "weatherZip": "30301",
+                                        "clockSeconds": True}}])[0]
+    assert shared["author"].startswith("TRusselo") and len(shared["author"]) == 40
+    assert shared["extras"] == {"clockFormat": "24h", "clockSeconds": True}
     layout = clean_block_layout({"spotlight": {
         "identity": {"x": 12.345, "y": -200, "width": 140,
                      "scale": 9, "height": 50, "align": "center", "font": "bebas"},
@@ -1338,9 +1615,10 @@ def selftest():
                                             "stinger": True, "bogus": 1},
                                   "not-a-template": {"plot": False}})
     assert vis == {"street": {"plot": False, "weather": True}}
-    assert visible_blocks("hero", {}) == {"clock", "identity", "meta", "ratings", "progress"}
+    assert visible_blocks("hero", {}) == {"backdrop", "clock", "identity", "meta",
+                                          "ratings", "progress"}
     assert visible_blocks("hero", {"hero": {"plot": True, "clock": False}}) == \
-        {"identity", "meta", "ratings", "progress", "plot"}
+        {"backdrop", "identity", "meta", "ratings", "progress", "plot"}
     assert ACCENT_RE.match("#A1b2C3") and not ACCENT_RE.match("red") \
         and not ACCENT_RE.match("#12345")
     v = ET.fromstring(SAMPLE_SESSION)
@@ -1539,18 +1817,6 @@ def selftest():
     assert einfo["scores"] == {"imdb": 7.2, "rtCritic": 77, "rtCriticFresh": True}
     assert einfo["stinger"] == ["after"]
     assert einfo["poster"] and einfo["backdrop"] and einfo["logo"]
-    # Panel-sized variants must be requested alongside the full-size art so the
-    # ESP panel can fetch small, fast-decoding images (see esphome/).
-    _saved_variants = []
-    _orig_save_img = globals()["emby_save_image"]
-    globals()["emby_save_image"] = \
-        lambda item_id, kind, out, w, h: _saved_variants.append((out, w, h))
-    try:
-        emby_download_art({"Id": "42", "Type": "Movie", "ImageTags": {"Logo": "x"}})
-        assert ("backdrop-panel.jpg", 480, 270) in _saved_variants, _saved_variants
-        assert ("logo-panel.png", 400, 150) in _saved_variants, _saved_variants
-    finally:
-        globals()["emby_save_image"] = _orig_save_img
     # both backends hand the card the same dict: same keys, no extras
     minfo = parse_session(ET.fromstring(SAMPLE_SESSION), extras=lambda k, m: SAMPLE_EXTRAS)
     assert set(einfo) == set(minfo), set(einfo) ^ set(minfo)

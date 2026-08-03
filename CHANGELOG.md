@@ -1,5 +1,114 @@
 # Changelog
 
+## 2.2.1 — 2026-08-02
+
+- **Fanart rotation now floors at 5 minutes** (up to 60), picked from a
+  dropdown — the Hub is ambient, not a slideshow. The settings preview still
+  rotates fast so you can see it working.
+- **Weather only runs where it shows.** A weather block on one template no
+  longer keeps the weather fetch alive on every other template.
+- **Fixed: chips now see the card's edges.** A block dragged off the edge
+  reported as visible; now it ghosts its chip the moment it leaves the frame,
+  and truth updates on every slider move instead of waiting for a re-render.
+
+## 2.2.0 — 2026-08-02
+
+- **New: Fanart template.** Rotating fanart.tv artwork for whatever's
+  playing — backgrounds by default, or posters, logos, clear art, banners,
+  thumbs — crossfading on a timer you set. It starts empty on purpose: add
+  only the blocks you want over the art. Tap the background for art type and
+  speed; paste a free fanart.tv API key on the Connection tab (stored
+  server-side, write-only, like every key).
+- **New: fog is real smoke.** Rising particle smoke replaces the old flat
+  haze (technique by dburrell, credited), and fixing it uncovered a
+  frame-rate bug foggy weather had always carried — gone.
+- **New: try any weather.** The Weather editor previews rain, snow, storm,
+  fog, cloudy, and day/night on demand. Preview only; never saved.
+- **Fixed: adding a block always shows it.** Some combos (Metadata on Big
+  Clock, Plot on Hero and Lower Third…) silently never appeared. Chips also
+  now verify a block really painted before claiming it's on screen.
+
+## 2.1.0 — 2026-08-01
+
+- **New: share your look.** "Share this look" exports your setup as a small
+  credited file; anyone importing it gets it on their carousel as a preset
+  "by you", one tap from applied. Credentials and location never ride along.
+- **New: honest chips.** A block that's on your card but has nothing to show
+  for the current title goes dim and dashed, and the editor says so —
+  instead of letting you drag sliders at nothing.
+- **New: About credits + support.** Contributors, catt, and the CodePen
+  artists behind the weather are named — plus an optional Buy Me a Coffee
+  button.
+- What's new renders as release cards now instead of a wall of text.
+
+## 2.0.0 — 2026-08-01
+
+Settings v2: the card fills the page and you edit what you're looking at.
+
+- **New: tap-to-edit.** Tap any block on the live preview — or the card's
+  background — and only that block's controls appear: font, per-block color
+  (new), position, size, and its own settings.
+- **New: presets.** Snapshot your current look onto the template carousel;
+  Export backs presets up.
+- **New: block chips.** One pill per block on the card — tap to edit,
+  × to remove, "+ Add" brings anything back.
+- **New: a six-step guided tour**, once, on first run — and a phone layout
+  where the preview pins to the top so the keyboard can never cover it.
+- **Removed:** the vibes/theme rows (per-block color replaces them; saved
+  themes keep tinting until you recolor), card-wide font rows, and poster
+  side. Every old save and export still imports cleanly.
+
+## 1.12.2 — 2026-08-01
+
+- Real design work on the only page we have: the card-content toggle wall is
+  now a light board — every card element is a bulb chip, lit amber when it's
+  on the card, dim glass when off. Fourteen full-width switch rows became
+  three rows of chips, with the clock and weather fine-tuning grouped
+  beneath them, still gated by their chips.
+- Tapping a block on the preview flashes its chip, so on/off and
+  place-and-size always point at each other.
+
+## 1.12.1 — 2026-08-01
+
+- Course correction on the editor idea: nothing hides anymore. Every option
+  is on the page, organized under sticky section chips (Template · Look ·
+  Card · Connection); tapping a region of the card now scrolls its controls
+  into view and flashes them instead of swapping panes.
+- The preview is a small monitor — sticky top-right on desktop, and back in
+  the bottom sheet on phones (the pattern that worked), sized down so the
+  controls keep the room.
+
+## 1.12.0 — 2026-07-31
+
+- The settings page is now an editor: the card fills the page and is the
+  navigation. Tap anything on it — the poster, the plot, the clock — and just
+  that thing's controls appear in the inspector rail. Look (templates, vibes,
+  theme, fonts) is the rail's home; server, casting, filters, and
+  export/import live behind Connection & casting in the top bar.
+- Save moved to the top bar, always in reach; on phones the card rides sticky
+  at the top while the inspector scrolls beneath it.
+- Nothing about the card or the saved settings changed — same keys, same
+  save flow, same instant preview.
+
+## 1.11.4 — 2026-07-31
+
+- The settings page now looks like the product it controls: the masthead is a
+  letterboard between two bulb rails in the card's own Bebas Neue, section
+  titles speak the same face, toggles glow amber when lit, the preview sits in
+  a real screen bezel that spills a little light, and the marquee's glow pools
+  down from the top of the page.
+
+## 1.11.3 — 2026-07-31
+
+- Settings page pass: Card content rows are grouped now — Clock style and
+  seconds sit under the Clock toggle, weather intensity/ZIP/units under the
+  weather toggles, and controls whose parent is off dim and disable instead
+  of silently doing nothing.
+- The preview leads: on desktop the demo card now sits right under Save with
+  the block editor folded beneath it (tap a block to unfold it, same as
+  phones), so the preview is always in view instead of below an open editor.
+- Panel headings got a size bump and a hairline rule — the long page scans.
+
 ## 1.11.2 — 2026-07-22
 
 - The card now accepts a `?tpl=<template>` query param to preview any
