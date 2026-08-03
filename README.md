@@ -12,7 +12,7 @@ Marquee turns a Google Nest Hub into a clean now-playing display for Plex, Emby,
 
 > ### 📺 This fork adds ESP32 panel support
 >
-> This is [TRusselo's fork](https://github.com/TRusselo/marquee). On top of everything upstream, it adds an **optional way to show the now-playing card on an ESP32 touch panel** (e.g. an Elecrow CrowPanel 7") running [ESPHome](https://esphome.io) — no Nest Hub required.
+> This is [TRusselo's fork](https://github.com/TRusselo/marquee-esp32). On top of everything upstream, it adds an **optional way to show the now-playing card on an ESP32 touch panel** (e.g. an Elecrow CrowPanel 7") running [ESPHome](https://esphome.io) — no Nest Hub required.
 >
 > It's a **decoupled add-on**: it talks to Marquee only over HTTP, so it runs against *any* Marquee (including the upstream image) and needs **no fork of the app itself**.
 >
