@@ -12,9 +12,12 @@ and serves it from a tiny stdlib HTTP server. Marquee itself is untouched.
 
 Endpoints (on `SERVE_PORT`):
 - `GET /card.jpg` — the current 800×480 card image.
-- `GET /state.json` — `{"ver": N, "playing": bool}`. `ver` bumps on every new
-  frame, so a client (the ESP panel) polls this cheaply and only re-downloads
-  `card.jpg` when `ver` changes.
+- `GET /state.json` — `{"ver": N, "cver": M, "playing": bool, "paused": bool}`.
+  - `ver` bumps on every new frame → the panel polls this cheaply and only
+    re-downloads `card.jpg` when `ver` changes.
+  - `cver` bumps only when the item (title/episode) changes → the panel uses it
+    to flash the backlight on a new title.
+  - `paused` lets the panel brighten to 100% while paused.
 
 ## Run
 

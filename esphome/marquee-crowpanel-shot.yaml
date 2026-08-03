@@ -7,7 +7,8 @@
 #    Nest Hub, because the marquee-shot sidecar renders the actual card page with
 #    headless Chromium and serves it as card.jpg. The panel just fetches that one
 #    image full-screen. Nothing is reconstructed on-device (no LVGL, no layout).
-#    Backlight dims during playback, full when idle.
+#    Backlight: 40% while actively playing (cinema); 100% when paused; OFF when
+#    idle/blank; tap-to-wake and a new title/episode brighten to 100% for 10 s.
 #
 #  REQUIRES THE SIDECAR (Chromium renderer) running on the Marquee host:
 #      docker compose --profile panel up -d
@@ -47,6 +48,10 @@ esp32:
   board: esp32-s3-devkitc-1
   framework:
     type: esp-idf
+    # Pin IDF 5.5.1: ESPHome's default (5.5.x >= 5.5.2) has the wifi regression
+    # (esphome#13443) -> 'Association Expired', flaky/no association. 5.5.1 is the
+    # last good wifi build and still satisfies i2c's >= 5.4.2 requirement.
+    version: 5.5.1
     sdkconfig_options:
       CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: y
       CONFIG_ESP32S3_DATA_CACHE_64KB: y
@@ -98,12 +103,27 @@ light:
     id: backlight
     name: Backlight
     restore_mode: ALWAYS_ON
+    default_transition_length: 250ms   # smooth backlight brightness changes
 
-# Capacitive touch (GT911) bus. `scan: false`; touchscreen left disabled.
+# Capacitive touch (GT911) shares this i2c bus — usable now that the console is
+# on UART0 (GPIO19/20 are free). `scan: false` = don't enumerate at boot.
 i2c:
   sda: 19
   scl: 20
-  scan: false
+  scan: false     # GT911 answers at the default 0x5D (polled touch works)
+
+# Tap-to-wake. NOTE: `interrupt_pin: 38` was tried and CRASHED the boot (OTA
+# rollback), so it's removed for now — this polled config boots but may not
+# detect touches yet. The correct GT911 wiring for this board (interrupt/reset
+# pin + i2c address 0x5D vs 0x14) still needs confirming (espboards PR #1494 /
+# schematic). Everything else (idle-off, paused=100%, new-title wake) works
+# without touch, driven by /state.json.
+touchscreen:
+  - platform: gt911
+    id: touch
+    on_touch:
+      - lambda: "id(wake_until) = millis() + 10000;"   # 10 s wake window
+      - script.execute: apply_backlight
 
 # RGB parallel panel (Elecrow CrowPanel 7.0" timing/pins — verify vs YOUR unit).
 display:
@@ -143,10 +163,15 @@ display:
 # =============================================================================
 
 globals:
-  - {id: prev_ver,       type: int,  restore_value: no, initial_value: "-1"}    # last /state.json ver
-  - {id: now_playing,    type: bool, restore_value: no, initial_value: "false"} # for backlight
-  - {id: card_dirty,     type: bool, restore_value: no, initial_value: "false"} # ver changed -> refetch
-  - {id: redraw_pending, type: bool, restore_value: no, initial_value: "false"} # new image decoded -> redraw
+  - {id: prev_ver,       type: int,      restore_value: no, initial_value: "-1"}    # last /state.json frame ver
+  - {id: prev_cver,      type: int,      restore_value: no, initial_value: "-1"}    # last content ver (title/episode)
+  - {id: now_playing,    type: bool,     restore_value: no, initial_value: "false"} # for backlight
+  - {id: now_paused,     type: bool,     restore_value: no, initial_value: "false"} # paused -> 100%
+  - {id: card_dirty,     type: bool,     restore_value: no, initial_value: "false"} # ver changed -> refetch
+  - {id: redraw_pending, type: bool,     restore_value: no, initial_value: "false"} # new image decoded -> redraw
+  - {id: wake_until,     type: uint32_t, restore_value: no, initial_value: "0"}     # millis() until wake ends
+  - {id: wake_pending,   type: bool,     restore_value: no, initial_value: "false"} # new title armed; wake starts on card draw
+  - {id: bl_level,       type: int,      restore_value: no, initial_value: "-1"}    # last applied backlight %
 
 # The card image itself, fetched on demand from the sidecar (not on a timer).
 online_image:
@@ -159,10 +184,35 @@ online_image:
     on_download_finished:
       - lambda: "id(redraw_pending) = true;"
 
-# The poll loop: check the sidecar's cheap /state.json every ${poll_every}, and
-# only re-download the card when its version bumps (any change: play/pause/seek/
-# title/progress). /state.json also carries the playing flag for the backlight,
-# so there's no separate now-playing poll.
+# Backlight policy in ONE place so tap, the poll loop, and card redraws all use
+# the same rule:
+#   wake window (tap / new title) -> 100%   ·   paused -> 100%
+#   actively playing -> 40% (cinema dim)    ·   idle / blank -> OFF
+script:
+  - id: apply_backlight
+    then:
+      - lambda: |-
+          uint32_t now = millis();
+          int target;
+          if ((int32_t)(id(wake_until) - now) > 0) target = 100;   // wake window active
+          else if (!id(now_playing))               target = 0;     // idle / blank -> off
+          else if (id(now_paused))                 target = 100;   // paused
+          else                                     target = 40;    // playing = cinema dim
+          if (target != id(bl_level)) {
+            id(bl_level) = target;
+            if (target == 0) {
+              id(backlight).turn_off().perform();
+            } else {
+              auto call = id(backlight).turn_on();
+              call.set_brightness(target / 100.0f);
+              call.perform();
+            }
+          }
+
+# The poll loop: check the sidecar's cheap /state.json every ${poll_every}; pull
+# the card only when its frame version bumps. The 10 s "new title" wake is
+# DEFERRED to when the new card is actually drawn (download+decode takes ~2 s),
+# so the brighten lines up with the visible card change rather than preceding it.
 interval:
   - interval: ${poll_every}
     then:
@@ -172,31 +222,38 @@ interval:
           on_response:
             then:
               - lambda: |-
-                  int ver = -1; bool playing = false;
+                  int ver = -1, cver = -1; bool playing = false, paused = false;
                   json::parse_json(body, [&](JsonObject root) -> bool {
-                    ver = root["ver"] | -1;
+                    ver     = root["ver"]     | -1;
+                    cver    = root["cver"]    | -1;
                     playing = root["playing"] | false;
+                    paused  = root["paused"]  | false;
                     return true;
                   });
                   id(now_playing) = playing;
+                  id(now_paused)  = paused;
                   if (ver != id(prev_ver)) { id(prev_ver) = ver; id(card_dirty) = true; }
-              - if:                              # version changed -> pull the new card
+                  if (cver != id(prev_cver)) {
+                    // New title/episode: ARM a wake (started on card draw below).
+                    // Skip the first sync at boot (prev_cver == -1).
+                    if (id(prev_cver) != -1) id(wake_pending) = true;
+                    id(prev_cver) = cver;
+                  }
+              - if:                              # frame changed -> pull the new card
                   condition:
                     lambda: "return id(card_dirty);"
                   then:
                     - lambda: "id(card_dirty) = false;"
-                    - component.update: card_img   # -> on_download_finished sets redraw_pending
-              - if:                              # cinema backlight: dim while playing
-                  condition:
-                    lambda: "return id(now_playing);"
-                  then:
-                    - light.turn_on: {id: backlight, brightness: 40%}
-                  else:
-                    - light.turn_on: {id: backlight, brightness: 100%}
-      # Redraw once a freshly-downloaded card has decoded.
+                    - component.update: card_img   # blocks ~2s; sets redraw_pending on finish
+      # Redraw the freshly-decoded card, and START the wake clock now if a new
+      # title was armed — so the brighten coincides with the card appearing.
       - if:
           condition:
             lambda: "return id(redraw_pending);"
           then:
-            - lambda: "id(redraw_pending) = false;"
+            - lambda: |-
+                id(redraw_pending) = false;
+                if (id(wake_pending)) { id(wake_pending) = false; id(wake_until) = millis() + 10000; }
             - component.update: panel
+      # Re-evaluate the backlight every tick (catches wake-window expiry too).
+      - script.execute: apply_backlight

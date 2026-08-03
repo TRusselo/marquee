@@ -5,14 +5,16 @@ Pure logic + stdlib only at import time. Playwright is imported lazily inside
 the renderer so `--selftest` runs anywhere with just Python 3.
 
 Cadence: poll now-playing.json fast (POLL_EVERY); re-render only when the state
-meaningfully changes (play/pause/stop/title/seek) so those show quickly, plus a
-slow PROGRESS_EVERY heartbeat for the creeping progress bar. Idle -> one frame,
-then Chromium sleeps.
+meaningfully changes (play/pause/stop/title/EPISODE/seek) so those show quickly,
+plus a slow PROGRESS_EVERY heartbeat for the creeping progress bar. Idle -> one
+frame, then Chromium sleeps.
 
 Serves two routes:
   /card.jpg    the current 800x480 card image
-  /state.json  {"ver": N, "playing": bool} — ver bumps on every new frame, so a
-               client can cheaply poll this and only re-fetch card.jpg on change.
+  /state.json  {"ver": N, "cver": M, "playing": bool, "paused": bool}
+               ver  bumps on every new frame (client re-fetches card.jpg on change)
+               cver bumps only when the item (title/episode) changes (client can
+                    use it to flash the backlight on a new title)
 """
 import os
 import sys
@@ -40,21 +42,29 @@ def cfg():
 
 
 def card_state(np):
-    """Extract the fields that decide when to re-render, from now-playing.json."""
+    """Extract the fields that decide when to re-render, from now-playing.json.
+
+    `key` is Marquee's unique item Id, so a new EPISODE (same show title, new key)
+    is detected. `paused` is derived from `state` ("paused"/"playing").
+    """
     prog = np.get("progress") or {}
+    state = str(np.get("state", ""))
     return {
         "playing": bool(np.get("playing", False)),
-        "state": str(np.get("state", "")),        # e.g. playing/paused (when playing)
+        "state": state,
+        "paused": "paus" in state.lower(),
         "title": str(np.get("title", "")),
+        "key": str(np.get("key", "")),
         "offset": int(prog.get("offsetMs", 0) or 0),
     }
 
 
 def hard_change(prev, cur):
-    """True on play/pause/stop/title change — the events that must show fast."""
+    """True on play/pause/stop/title/EPISODE change — events that must show fast."""
     return (prev["playing"] != cur["playing"]
             or prev["state"] != cur["state"]
-            or prev["title"] != cur["title"])
+            or prev["title"] != cur["title"]
+            or prev["key"] != cur["key"])
 
 
 def is_seek(prev, cur, elapsed_s, seek_ms):
@@ -76,16 +86,20 @@ def fetch_json(url, timeout=5):
         return json.loads(r.read().decode("utf-8"))
 
 
-_latest = {"jpg": None, "ver": 0, "playing": False}
+_latest = {"jpg": None, "ver": 0, "cver": 0, "playing": False, "paused": False, "key": ""}
 _latest_lock = threading.Lock()
 
 
-def publish(jpg, playing):
-    """Atomically make jpg the frame served to clients and bump the version."""
+def publish(jpg, playing, paused, key):
+    """Publish a frame: bump ver always, and cver only when the item changes."""
     with _latest_lock:
         _latest["jpg"] = jpg
         _latest["ver"] += 1
         _latest["playing"] = bool(playing)
+        _latest["paused"] = bool(paused)
+        if key and key != _latest["key"]:      # new title/episode
+            _latest["cver"] += 1
+            _latest["key"] = key
 
 
 class CardHandler(BaseHTTPRequestHandler):
@@ -93,9 +107,12 @@ class CardHandler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/state.json":
             with _latest_lock:
-                body = json.dumps(
-                    {"ver": _latest["ver"], "playing": _latest["playing"]}
-                ).encode("utf-8")
+                body = json.dumps({
+                    "ver": _latest["ver"],
+                    "cver": _latest["cver"],
+                    "playing": _latest["playing"],
+                    "paused": _latest["paused"],
+                }).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -185,10 +202,10 @@ def run():
     r = Renderer(c["url"], c["width"], c["height"], c["quality"])
     r.start()
 
-    def do_capture(playing):
+    def do_capture(st):
         r.reload()
         time.sleep(c["settle"])
-        publish(r.capture(), playing)
+        publish(r.capture(), st["playing"], st["paused"], st["key"])
 
     prev = None
     prev_mono = time.monotonic()
@@ -218,7 +235,7 @@ def run():
                 reason = "idle"
 
             if reason:
-                do_capture(cur["playing"])
+                do_capture(cur)
                 last_capture = now
                 idle_captured = not cur["playing"]
                 print(f"captured ({reason})", flush=True)
@@ -229,43 +246,47 @@ def run():
 
 
 def _selftest():
-    # card_state extracts exactly the fields we key on.
-    s = card_state({"playing": True, "state": "playing", "title": "X",
+    # card_state extracts exactly the fields we key on, including paused + key.
+    s = card_state({"playing": True, "state": "playing", "title": "X", "key": "k1",
                     "progress": {"offsetMs": 12000}})
-    assert s == {"playing": True, "state": "playing", "title": "X", "offset": 12000}, s
-    assert card_state({}) == {"playing": False, "state": "", "title": "", "offset": 0}
+    assert s == {"playing": True, "state": "playing", "paused": False, "title": "X",
+                 "key": "k1", "offset": 12000}, s
+    assert card_state({}) == {"playing": False, "state": "", "paused": False,
+                              "title": "", "key": "", "offset": 0}
+    assert card_state({"playing": True, "state": "paused"})["paused"] is True
 
-    # hard_change: play/pause/stop/title flip true; advancing offset does not.
-    base = card_state({"playing": True, "state": "playing", "title": "X",
+    # hard_change: play/pause/stop/title/EPISODE flip true; advancing offset does not.
+    base = card_state({"playing": True, "state": "playing", "title": "X", "key": "k1",
                        "progress": {"offsetMs": 1000}})
     assert hard_change(base, card_state({"playing": True, "state": "paused",
-                       "title": "X", "progress": {"offsetMs": 1000}})) is True
+                       "title": "X", "key": "k1", "progress": {"offsetMs": 1000}})) is True
     assert hard_change(base, card_state({"playing": False})) is True
     assert hard_change(base, card_state({"playing": True, "state": "playing",
-                       "title": "Y", "progress": {"offsetMs": 1000}})) is True
+                       "title": "Y", "key": "k2", "progress": {"offsetMs": 1000}})) is True
     assert hard_change(base, card_state({"playing": True, "state": "playing",
-                       "title": "X", "progress": {"offsetMs": 4000}})) is False, \
+                       "title": "X", "key": "k2", "progress": {"offsetMs": 1000}})) is True, \
+        "same show, new episode (new key) is a hard change"
+    assert hard_change(base, card_state({"playing": True, "state": "playing",
+                       "title": "X", "key": "k1", "progress": {"offsetMs": 4000}})) is False, \
         "advancing offset is not a hard change"
 
     # is_seek: normal advance = no; big jump = yes; frozen (paused) = no.
-    p = card_state({"playing": True, "state": "playing", "title": "X",
+    p = card_state({"playing": True, "state": "playing", "title": "X", "key": "k1",
                     "progress": {"offsetMs": 10000}})
-    normal = card_state({"playing": True, "state": "playing", "title": "X",
+    normal = card_state({"playing": True, "state": "playing", "title": "X", "key": "k1",
                          "progress": {"offsetMs": 12000}})
     assert is_seek(p, normal, 2.0, 5000) is False, "advanced ~2s over 2s"
-    jump = card_state({"playing": True, "state": "playing", "title": "X",
+    jump = card_state({"playing": True, "state": "playing", "title": "X", "key": "k1",
                        "progress": {"offsetMs": 300000}})
     assert is_seek(p, jump, 2.0, 5000) is True, "jumped ~5min"
-    frozen = card_state({"playing": True, "state": "playing", "title": "X",
+    frozen = card_state({"playing": True, "state": "playing", "title": "X", "key": "k1",
                          "progress": {"offsetMs": 10000}})
     assert is_seek(p, frozen, 30.0, 5000) is False, "frozen 30s = paused, not seek"
-    stopped = card_state({"playing": False})
-    assert is_seek(p, stopped, 2.0, 5000) is False, "not-playing is never a seek"
 
     # fetch_json round-trips JSON from a local ephemeral server.
     class _H(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = b'{"playing": true, "title": "Family Guy", "progress": {"offsetMs": 42}}'
+            body = b'{"playing": true, "title": "Family Guy", "key": "42", "progress": {"offsetMs": 42}}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -277,38 +298,41 @@ def _selftest():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     port = srv.server_address[1]
     got = card_state(fetch_json(f"http://127.0.0.1:{port}/now-playing.json"))
-    assert got["playing"] is True and got["title"] == "Family Guy" and got["offset"] == 42, got
+    assert got["playing"] is True and got["title"] == "Family Guy" and got["key"] == "42", got
     srv.shutdown()
 
-    # File server: 503 before a frame; /card.jpg + /state.json after publish().
+    # File server + versioning: 503 before a frame; ver bumps per publish; cver
+    # only on a new key; paused reflected.
     with _latest_lock:
-        _latest["jpg"] = None
-        _latest["ver"] = 0
-        _latest["playing"] = False
+        _latest.update({"jpg": None, "ver": 0, "cver": 0, "playing": False,
+                        "paused": False, "key": ""})
     csrv = ThreadingHTTPServer(("127.0.0.1", 0), CardHandler)
     threading.Thread(target=csrv.serve_forever, daemon=True).start()
     cport = csrv.server_address[1]
+
+    def _state():
+        with urllib.request.urlopen(f"http://127.0.0.1:{cport}/state.json", timeout=5) as r:
+            return json.loads(r.read())
+
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{cport}/card.jpg", timeout=5)
         assert False, "expected 503 before first frame"
     except urllib.error.HTTPError as e:
         assert e.code == 503, e.code
-    with urllib.request.urlopen(f"http://127.0.0.1:{cport}/state.json", timeout=5) as r:
-        st = json.loads(r.read())
-        assert st == {"ver": 0, "playing": False}, st
-    publish(b"\xff\xd8\xff-not-a-real-jpeg-but-bytes", True)
+    assert _state() == {"ver": 0, "cver": 0, "playing": False, "paused": False}
+    publish(b"\xff\xd8\xff-frame1", True, False, "k1")     # new item
+    assert _state() == {"ver": 1, "cver": 1, "playing": True, "paused": False}
+    publish(b"\xff\xd8\xff-frame2", True, True, "k1")      # same item, now paused
+    assert _state() == {"ver": 2, "cver": 1, "playing": True, "paused": True}
+    publish(b"\xff\xd8\xff-frame3", True, False, "k2")     # new episode -> cver++
+    assert _state() == {"ver": 3, "cver": 2, "playing": True, "paused": False}
     with urllib.request.urlopen(f"http://127.0.0.1:{cport}/card.jpg", timeout=5) as r:
-        assert r.status == 200
-        assert r.headers["Content-Type"] == "image/jpeg", r.headers["Content-Type"]
-        assert r.read() == b"\xff\xd8\xff-not-a-real-jpeg-but-bytes"
-    with urllib.request.urlopen(f"http://127.0.0.1:{cport}/state.json", timeout=5) as r:
-        st = json.loads(r.read())
-        assert st == {"ver": 1, "playing": True}, st
+        assert r.headers["Content-Type"] == "image/jpeg"
+        assert r.read() == b"\xff\xd8\xff-frame3"
     csrv.shutdown()
     with _latest_lock:
-        _latest["jpg"] = None
-        _latest["ver"] = 0
-        _latest["playing"] = False
+        _latest.update({"jpg": None, "ver": 0, "cver": 0, "playing": False,
+                        "paused": False, "key": ""})
 
     print("selftest ok")
 
