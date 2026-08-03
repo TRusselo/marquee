@@ -1,0 +1,51 @@
+name: Build marquee-shot
+
+# Publishes the optional ESP-panel sidecar image to GHCR so non-compose users
+# (Unraid Community Applications template, plain `docker run`) can pull it.
+# Nothing here touches the marquee app — the sidecar is a decoupled add-on.
+
+on:
+  push:
+    branches: ["feature/esp32-support"]
+    tags: ["shot-v*"]
+    paths:
+      - "sidecar/**"
+      - ".github/workflows/marquee-shot.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR image paths must be lowercase; the owner (TRusselo) may not be.
+      - name: Resolve lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/marquee-shot" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=ref,event=tag
+            type=sha,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./sidecar
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

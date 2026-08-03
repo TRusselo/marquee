@@ -2,7 +2,12 @@
 
 Renders Marquee's real card page to `card.jpg` and serves it, so an ESP32 panel
 can display the pixel-perfect card instead of reconstructing it. **Optional** —
-Nest Hub users never need this.
+Nest Hub users never need it.
+
+It is a **decoupled add-on**: it talks to Marquee only over HTTP and never
+modifies it, so it runs alongside **any Marquee — including the upstream image**
+(no fork of the app required, and it inherits card design changes for free).
+Published image: `ghcr.io/trusselo/marquee-shot`.
 
 ## How it works
 
@@ -19,13 +24,28 @@ Endpoints (on `SERVE_PORT`):
     to flash the backlight on a new title.
   - `paused` lets the panel brighten to 100% while paused.
 
-## Run
+## Enable it (pick your platform)
 
-Opt-in via the `panel` Compose profile (from the repo root):
+Point it at a running Marquee via `MARQUEE_URL` (with host networking that's
+usually `http://127.0.0.1:8084`). Disable = stop/remove the container; Marquee is
+never affected.
 
-    docker compose --profile panel up -d --build
+**Unraid (Docker tab / Community Applications):** add `unraid/marquee-shot.xml`
+— Add Container → paste the template URL, or drop the file in
+`/boot/config/plugins/dockerMan/templates-user/` — then set *Marquee URL* + panel
+size and apply.
 
-A plain `docker compose up -d` does **not** build or start it.
+**Plain `docker run`:**
+
+    docker run -d --name marquee-shot --network host --restart unless-stopped \
+      -e MARQUEE_URL=http://127.0.0.1:8084 \
+      -e PANEL_WIDTH=800 -e PANEL_HEIGHT=480 -e SERVE_PORT=8088 \
+      ghcr.io/trusselo/marquee-shot:latest
+
+**Docker Compose** (this repo, for dev/deploy) — opt-in via the `panel` profile,
+so a plain `docker compose up -d` never starts it:
+
+    docker compose --profile panel up -d
 
 ## Environment
 

@@ -12,15 +12,20 @@ itself. **Leave Marquee on `CAST_TARGET=nest` (or unset)** — you do *not* set 
 ## Two ways to render the card
 
 ### 1. Screenshot sidecar — recommended, pixel-perfect
-`marquee-crowpanel-shot.yaml` + the optional **`marquee-shot`** Docker sidecar.
-The sidecar (headless Chromium) screenshots Marquee's *real* card page to a JPEG;
-the panel simply displays that image full-screen. Pixel-identical to the Nest Hub
-card, and the panel config stays dead simple (no on-device layout).
+`marquee-crowpanel-shot.yaml` + the optional **`marquee-shot`** sidecar (headless
+Chromium). The sidecar screenshots Marquee's *real* card page to a JPEG; the panel
+just displays that image full-screen — pixel-identical to the Nest Hub card, and
+the panel config stays dead simple (no on-device layout).
 
-- Start the sidecar (opt-in — Nest-only users never run it):
-  `docker compose --profile panel up -d`
-- Flash `marquee-crowpanel-shot.yaml`.
-- Sidecar knobs (resolution, cadence, port): see `../sidecar/README.md`.
+The sidecar is a **decoupled add-on**: it reads Marquee only over HTTP and never
+modifies it, so it runs against **any Marquee, including the upstream image** —
+the panel inherits the real card design for free. Published at
+`ghcr.io/trusselo/marquee-shot`.
+
+- Enable it — Unraid CA template (`../unraid/marquee-shot.xml`), plain
+  `docker run`, or the compose `panel` profile: see `../sidecar/README.md`.
+- Flash `marquee-crowpanel-shot.yaml`, pointing `sidecar_host` at wherever the
+  sidecar runs.
 
 ### 2. On-device render — no sidecar (`examples/`)
 The ESP reconstructs the card itself from `now-playing.json` + art. Lighter infra

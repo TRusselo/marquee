@@ -29,8 +29,8 @@ services:
   # profile, so a plain `docker compose up` does NOT build or start it.
   #   panel users:  docker compose --profile panel up -d
   marquee-shot:
+    image: ghcr.io/trusselo/marquee-shot:latest   # published add-on; `--build` rebuilds from ./sidecar
     build: ./sidecar
-    image: marquee-shot:local
     container_name: marquee-shot
     profiles: ["panel"]
     network_mode: host

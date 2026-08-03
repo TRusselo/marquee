@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!-- Unraid Community Applications template for the optional Marquee ESP-panel
+     sidecar. Add it from the Docker tab (Add Container -> paste this template's
+     URL, or drop the file in /boot/config/plugins/dockerMan/templates-user/).
+     It is a decoupled add-on: it only needs a running Marquee to talk to. -->
+<Container version="2">
+  <Name>marquee-shot</Name>
+  <Repository>ghcr.io/trusselo/marquee-shot:latest</Repository>
+  <Registry>https://github.com/TRusselo/marquee/pkgs/container/marquee-shot</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/TRusselo/marquee/tree/feature/esp32-support/sidecar</Support>
+  <Project>https://github.com/TRusselo/marquee</Project>
+  <Overview>Optional ESP32-panel sidecar for Marquee. Renders Marquee's real now-playing card with headless Chromium and serves it as a flat image (/card.jpg) plus a tiny /state.json change signal, so an ESP32 panel (e.g. Elecrow CrowPanel) can display the pixel-perfect card. REQUIRES a running Marquee on your LAN; it does NOT modify Marquee. Nest Hub users do not need this. Uses host networking — set "Marquee URL" to your Marquee address.</Overview>
+  <Category>MediaApp:Video HomeAutomation: Other:</Category>
+  <WebUI>http://[IP]:8088/card.jpg</WebUI>
+  <Icon>https://raw.githubusercontent.com/TRusselo/marquee/feature/esp32-support/assets/marquee-icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <Description>Optional ESP32-panel sidecar for Marquee (screenshot renderer). Opt-in add-on that runs alongside Marquee; not needed for Nest Hub casting.</Description>
+  <Networking>
+    <Mode>host</Mode>
+  </Networking>
+  <Config Name="Marquee URL" Target="MARQUEE_URL" Default="http://127.0.0.1:8084" Mode="" Description="Base URL of your running Marquee (with host networking this is usually localhost)" Type="Variable" Display="always" Required="true" Mask="false">http://127.0.0.1:8084</Config>
+  <Config Name="Serve Port" Target="SERVE_PORT" Default="8088" Mode="" Description="Port this sidecar serves /card.jpg and /state.json on (must be free on the host)" Type="Variable" Display="always" Required="true" Mask="false">8088</Config>
+  <Config Name="Panel Width" Target="PANEL_WIDTH" Default="800" Mode="" Description="Your ESP panel width in pixels" Type="Variable" Display="always" Required="true" Mask="false">800</Config>
+  <Config Name="Panel Height" Target="PANEL_HEIGHT" Default="480" Mode="" Description="Your ESP panel height in pixels" Type="Variable" Display="always" Required="true" Mask="false">480</Config>
+  <Config Name="JPEG Quality" Target="JPEG_QUALITY" Default="85" Mode="" Description="Card JPEG quality, 1-100" Type="Variable" Display="advanced" Required="false" Mask="false">85</Config>
+</Container>
