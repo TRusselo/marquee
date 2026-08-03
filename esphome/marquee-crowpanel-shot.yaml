@@ -6,7 +6,8 @@
 substitutions:
   sidecar_host: "192.168.1.12"     # Unraid host running marquee-shot
   sidecar_port: "8088"             # marquee-shot SERVE_PORT (/card.jpg + /state.json)
-  poll_every: "1s"                 # poll the tiny /state.json; card fetched only on a version change
+  poll_every: "2s"                 # sweet spot: 1s over-polls (card download+decode+redraw
+                                   # can't finish in 1s -> backs up -> slower). 2s stays snappy.
 
 esphome:
   name: marquee-panel
