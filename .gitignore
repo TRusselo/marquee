@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .env
 data/
+sidecar-out/          # marquee-shot fidelity-render test output
 # Local secrets: compose merges this over compose.yaml automatically.
 # Keeps EMBY_API_KEY / PLEX_TOKEN out of the tracked compose.yaml.
 compose.override.yaml

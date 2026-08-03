@@ -1,0 +1,287 @@
+# =============================================================================
+#  Marquee panel — LVGL "cinematic" card   (ON-DEVICE render, NO sidecar)
+#  Board: Elecrow CrowPanel Basic HMI 7.0"  (ESP32-S3-WROOM-1-N4R8, 800x480 RGB)
+# =============================================================================
+#  WHAT THIS DOES / WHAT YOU SEE:
+#    The panel polls Marquee's now-playing.json every few seconds and builds the
+#    card itself with LVGL: a full-screen dimmed backdrop, the title bottom-left,
+#    and a metadata line (YEAR | genre | audio). "Nothing playing" on a dark
+#    screen when idle. It reconstructs the card on-device (it is NOT a pixel copy
+#    of the Nest Hub card — for that, use the screenshot sidecar method instead:
+#    ../marquee-crowpanel-shot.yaml).
+#
+#  REQUIRES: a running Marquee that serves, on the LAN:
+#    /now-playing.json, /backdrop-panel.jpg   (Marquee already serves these).
+#  Keep Marquee on CAST_TARGET=nest — this panel drives itself, pull-style.
+#
+#  PER-INSTALL: edit `substitutions` (server IP), the `wifi:` block (secrets +
+#  static IP), and confirm the RGB timing/pins match YOUR unit.
+#
+#  NOTE (ESPHome 2026.7+): LVGL's draw buffer must stay tiny (`buffer_size: 5%`)
+#  or it eats the internal RAM WiFi needs and WiFi won't hold. See PART 2.
+# =============================================================================
+
+substitutions:
+  marquee_host: "192.168.1.12"     # <-- your Marquee server LAN IP (the PAGE_URL host)
+  marquee_port: "8084"
+  poll_every: "5s"                 # how often to poll now-playing.json
+
+
+# =============================================================================
+#  PART 1 — ESP32 / CrowPanel HARDWARE
+#  Board, memory, radio, console, and the RGB display wiring. This part is the
+#  same for every Marquee panel on this board and rarely changes — only the
+#  per-install bits (server IP above, wifi/static-IP below) differ. It is
+#  identical to the lambda example's PART 1.
+# =============================================================================
+
+esphome:
+  name: marquee-panel
+  friendly_name: Marquee Panel
+  platformio_options:
+    build_flags: "-DBOARD_HAS_PSRAM"
+    board_build.esp-idf.memory_type: qio_opi     # QIO flash + OPI (octal) PSRAM
+    board_build.flash_mode: dio
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+    # No IDF version pin: ESPHome's recommended IDF (>= 5.4.2) satisfies i2c and
+    # the wifi component. (Pinning an exact old version has broken wifi before.)
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: y
+      CONFIG_ESP32S3_DATA_CACHE_64KB: y
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: y        # octal-PSRAM tuning for this board
+      CONFIG_SPIRAM_RODATA: y
+
+# PSRAM is REQUIRED: the 800x480x2 (~768 KB) framebuffer + JPEG decode buffers
+# live here. This board is an N4R8 = 8 MB OCTAL PSRAM.
+psram:
+  mode: octal
+  speed: 80MHz
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # DHCP by default. Optional: pin a static IP so the panel is easy to find for
+  # OTA — uncomment and set to YOUR LAN.
+  # manual_ip:
+  #   static_ip: 192.168.1.50
+  #   gateway: 192.168.1.1
+  #   subnet: 255.255.255.0
+
+logger:
+  # Force UART0 (GPIO43/44 -> CH340 -> /dev/ttyUSB0). ESPHome 2026.7 defaults the
+  # console to USB_SERIAL_JTAG, whose pins (GPIO19/20) ARE this board's touch-i2c
+  # bus -> i2c init kills the console (and destabilizes the app). UART0 is the
+  # stable, non-conflicting channel and carries ROM + bootloader + app together.
+  hardware_uart: UART0
+api:
+ota:
+  - platform: esphome
+
+http_request:
+  id: http
+  timeout: 8s
+  watchdog_timeout: 12s
+  useragent: marquee-panel
+  verify_ssl: false                # Marquee is plain HTTP on the LAN
+
+# Backlight on GPIO2 (dimmable). LVGL turns it on at boot; add your own dim/off
+# logic if you want cinema dimming during playback.
+output:
+  - platform: ledc
+    pin: 2
+    frequency: 1220Hz
+    id: backlight_pwm
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    id: backlight
+    name: Backlight
+    restore_mode: ALWAYS_ON
+
+# Capacitive touch (GT911) bus. `scan: false` — we don't enumerate it; the
+# touchscreen itself is optional and left disabled for a passive marquee.
+i2c:
+  sda: 19
+  scl: 20
+  scan: false
+
+# RGB parallel panel. These porch/pclk values and pin maps are for the Elecrow
+# CrowPanel 7.0"; verify against YOUR unit's schematic if colors/timing look off.
+display:
+  - platform: rpi_dpi_rgb
+    id: panel
+    update_interval: never         # LVGL drives the panel; no periodic full repaint
+    auto_clear_enabled: false
+    color_order: RGB
+    pclk_inverted: true
+    dimensions: {width: 800, height: 480}
+    de_pin: 41
+    hsync_pin: 39
+    vsync_pin: 40
+    pclk_pin: 0
+    hsync_front_porch: 40
+    hsync_pulse_width: 48
+    hsync_back_porch: 13
+    vsync_front_porch: 1
+    vsync_pulse_width: 31
+    vsync_back_porch: 13
+    data_pins:
+      red:   [14, 21, 47, 48, 45]
+      green: [9, 46, 3, 8, 16, 1]
+      blue:  [15, 7, 6, 5, 4]
+
+
+# =============================================================================
+#  PART 2 — MARQUEE CARD  (application logic)
+#  Fetches now-playing.json + backdrop art and renders the cinematic card with
+#  LVGL. THIS is the part that differs between rendering methods.
+# =============================================================================
+
+font:
+  - {file: "gfonts://Oswald", id: font_lg, size: 40}   # title
+  - {file: "gfonts://Roboto", id: font_md, size: 26}   # metadata
+
+# Cross-lambda state (a lambda can't see another lambda's locals, so shared
+# signals live here).
+globals:
+  - {id: now_playing, type: bool,        restore_value: no, initial_value: "false"}
+  - {id: now_title,   type: std::string, restore_value: no}
+  - {id: now_meta,    type: std::string, restore_value: no}
+  - {id: prev_title,  type: std::string, restore_value: no}   # edge-detect title change
+
+# Full-screen backdrop. Marquee serves backdrop-panel.jpg at 480x270; online_image
+# upscales it to fill 800x480. The ~768 KB RGB565 buffer is too big for internal
+# RAM so it lands in PSRAM (which is exactly what keeps WiFi's internal DMA
+# buffers free). Downloaded on demand (update_interval: never); the callback just
+# refreshes the LVGL widget.
+online_image:
+  - id: backdrop_img
+    url: "http://${marquee_host}:${marquee_port}/backdrop-panel.jpg"
+    format: JPEG
+    type: RGB565
+    resize: 800x480
+    update_interval: never
+    on_download_finished:
+      - lvgl.image.update:
+          id: backdrop_widget
+          src: backdrop_img
+
+lvgl:
+  displays:
+    - panel
+  # CRITICAL on this 800x480 RGB board (ESPHome 2026.7+): WiFi RX/TX buffers must
+  # live in internal DMA RAM. LVGL's default draw buffer (25% = ~192 KB) eats that
+  # RAM and WiFi can't init/hold. Shrink it hard — the card is near-static so a
+  # small buffer is fine. (See HA thread "No WiFi after adding lvgl".)
+  buffer_size: 5%
+  widgets:
+    - obj:                         # root: dark background layer
+        id: root
+        x: 0
+        y: 0
+        width: 800
+        height: 480
+        bg_color: 0x101014
+        bg_opa: COVER
+        pad_all: 0
+        border_width: 0
+        widgets:
+          - image:                 # bottom: the backdrop, filling the screen
+              id: backdrop_widget
+              x: 0
+              y: 0
+              src: backdrop_img
+          - obj:                   # middle: dim scrim so text stays legible
+              id: scrim
+              x: 0
+              y: 0
+              width: 800
+              height: 480
+              bg_color: 0x000000
+              bg_opa: 50%          # tune 40-60% to taste
+              border_width: 0
+              radius: 0
+              pad_all: 0
+          - label:                 # top: title, lower-left (movie-card style)
+              id: title_label
+              align: BOTTOM_LEFT
+              x: 40
+              y: -56
+              text: "Marquee"
+              text_color: 0xFFFFFF
+              text_font: font_lg
+          - label:                 # metadata line under the title
+              id: meta_label
+              align: BOTTOM_LEFT
+              x: 40
+              y: -26
+              text: ""
+              text_color: 0xB4B4BE
+              text_font: font_md
+
+# The poll loop: fetch now-playing.json, and only redraw when the TITLE changes
+# (edge-triggered) so we don't repaint every poll. LVGL updates just the changed
+# widgets (no full-screen wipe).
+interval:
+  - interval: ${poll_every}
+    then:
+      - http_request.get:
+          url: "http://${marquee_host}:${marquee_port}/now-playing.json"
+          capture_response: true
+          on_response:
+            then:
+              # Parse into globals: playing flag, title, and a composed metadata
+              # line "YEAR | genre | audio" (ASCII separators — the gfonts here
+              # only include ASCII glyphs).
+              - lambda: |-
+                  json::parse_json(body, [](JsonObject root) -> bool {
+                    id(now_playing) = root["playing"] | false;
+                    if (!id(now_playing)) { id(now_title) = ""; id(now_meta) = ""; return true; }
+                    id(now_title) = std::string(root["title"] | "");
+                    std::string meta;
+                    int yr = root["year"] | 0;
+                    if (yr > 0) meta = std::to_string(yr);
+                    int gi = 0;
+                    for (JsonVariant gv : root["genres"].as<JsonArray>()) {
+                      const char *g = gv.as<const char *>();
+                      if (g && g[0]) {
+                        if (!meta.empty()) meta += "   |   ";
+                        meta += g;
+                        if (++gi >= 2) break;             // at most 2 genres
+                      }
+                    }
+                    const char *at = root["audioTrack"] | "";
+                    if (at && at[0]) {
+                      if (!meta.empty()) meta += "   |   ";
+                      meta += at;
+                    }
+                    id(now_meta) = meta;
+                    return true;
+                  });
+              # Redraw only on a title change (or play->stop). New title = new art.
+              - if:
+                  condition:
+                    lambda: "return id(now_title) != id(prev_title);"
+                  then:
+                    - lvgl.label.update:
+                        id: title_label
+                        text: !lambda |-
+                          return id(now_playing) ? id(now_title)
+                                                 : std::string("Nothing playing");
+                    - lvgl.label.update:
+                        id: meta_label
+                        text: !lambda |-
+                          return id(now_playing) ? id(now_meta) : std::string("");
+                    - if:
+                        condition:
+                          lambda: "return id(now_playing);"
+                        then:
+                          - lvgl.widget.show: backdrop_widget
+                          - component.update: backdrop_img   # fetch new backdrop
+                        else:
+                          - lvgl.widget.hide: backdrop_widget # idle -> dark screen
+                    - lambda: "id(prev_title) = id(now_title);"
